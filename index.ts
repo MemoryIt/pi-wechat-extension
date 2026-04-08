@@ -75,7 +75,7 @@ async function handleLogin(ctx: ExtensionCommandContext) {
     });
 
     if (loginResult.connected) {
-      ctx.ui.notify("✅ 与微信连接成功！", "success");
+      ctx.ui.notify("✅ 与微信连接成功！", "info");
       
       // Output server response
       console.log("\n=== 登录成功 ===");
