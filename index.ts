@@ -10,6 +10,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "./auth/login-qr.js";
+import { saveToken, upsertAccount } from "./storage/state.js";
 
 export default function (pi: ExtensionAPI) {
   // Register wechat login command
@@ -75,14 +76,33 @@ async function handleLogin(ctx: ExtensionCommandContext) {
     });
 
     if (loginResult.connected) {
+      const accountId = loginResult.accountId!;
+      const botToken = loginResult.botToken!;
+
+      // 保存登录凭证
+      await saveToken(accountId, {
+        botToken,
+        accountId,
+        userId: loginResult.userId!,
+        baseUrl: loginResult.baseUrl!,
+        loginAt: Date.now(),
+      });
+
+      // 保存账号索引
+      await upsertAccount({
+        accountId,
+        displayName: "微信账号",
+        loginAt: Date.now(),
+      });
+
       ctx.ui.notify("✅ 与微信连接成功！", "info");
-      
+
       // Output server response
       console.log("\n=== 登录成功 ===");
       console.log("服务器返回信息：");
       console.log(JSON.stringify({
-        botToken: loginResult.botToken,
-        accountId: loginResult.accountId,
+        botToken,
+        accountId,
         userId: loginResult.userId,
         baseUrl: loginResult.baseUrl,
       }, null, 2));
