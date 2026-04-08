@@ -70,12 +70,18 @@ export class WechatEngine {
    */
   stopPolling(): void {
     this.abortController.abort();
+    // 立即更新状态，不用等轮询循环退出
+    this.state.connectionState = "disconnected";
   }
 
   /**
    * 启动长轮询
    */
   async startPolling(opts: { baseUrl: string; token: string }): Promise<void> {
+    // 如果之前的 AbortController 已 abort，创建新的
+    if (this.abortController.signal.aborted) {
+      this.abortController = new AbortController();
+    }
     const abortSignal = this.abortController.signal;
 
     // 获取默认账号
