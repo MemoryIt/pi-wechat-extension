@@ -10,10 +10,14 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "./auth/login-qr.js";
-import { saveToken, upsertAccount } from "./storage/state.js";
+import { saveToken, upsertAccount, getDefaultAccountToken } from "./storage/state.js";
+import { engine, setPi } from "./wechat.js";
 
 export default function (pi: ExtensionAPI) {
-  // Register wechat login command
+  // 注入 pi 实例到 wechat engine
+  setPi(pi);
+
+  // 注册 wechat login command
   pi.registerCommand("wechat", {
     description: "WeChat integration",
     getArgumentCompletions: (prefix) => {
@@ -28,10 +32,49 @@ export default function (pi: ExtensionAPI) {
         await handleLogin(ctx);
       } else if (subcommand === "status") {
         ctx.ui.notify("WeChat: Use /wechat login to connect", "info");
+      } else if (subcommand === "status") {
+        const token = await getDefaultAccountToken();
+        if (token) {
+          ctx.ui.notify(`WeChat: Connected (${token.accountId})
+Connection State: ${engine.connectionState}`, "info");
+        } else {
+          ctx.ui.notify("WeChat: Not logged in", "info");
+        }
+      } else if (subcommand === "start") {
+        // 手动启动轮询（用于测试）
+        const token = await getDefaultAccountToken();
+        if (!token) {
+          ctx.ui.notify("WeChat: Not logged in. Use /wechat login first.", "error");
+          return;
+        }
+        ctx.ui.notify("WeChat: Starting polling...", "info");
+        engine.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
+          ctx.ui.notify(`Polling error: ${err.message}`, "error");
+        });
+      } else if (subcommand === "stop") {
+        engine.stopPolling();
+        ctx.ui.notify("WeChat: Stopped polling", "info");
       } else {
-        ctx.ui.notify("Usage: /wechat login", "info");
+        ctx.ui.notify("Usage: /wechat login | status | start | stop", "info");
       }
     },
+  });
+
+  // === session_start: 启动长轮询 ===
+  pi.on("session_start", async () => {
+    const token = await getDefaultAccountToken();
+    if (token) {
+      console.log("[Wechat] Starting polling after session_start...");
+      engine.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
+        console.error("[Wechat] Polling error:", err.message);
+      });
+    }
+  });
+
+  // === session_shutdown: 停止轮询 ===
+  pi.on("session_shutdown", async () => {
+    console.log("[Wechat] Stopping polling after session_shutdown...");
+    engine.stopPolling();
   });
 }
 
