@@ -10,7 +10,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "./auth/login-qr.js";
-import { saveToken, upsertAccount, getDefaultAccountToken } from "./storage/state.js";
+import { saveToken, upsertAccount, getDefaultAccountToken, deleteToken, removeAccount, listAccounts } from "./storage/state.js";
 import { engine, setPi } from "./wechat.js";
 
 export default function (pi: ExtensionAPI) {
@@ -52,6 +52,18 @@ Connection State: ${engine.connectionState}`, "info");
       } else if (subcommand === "stop") {
         engine.stopPolling();
         ctx.ui.notify("WeChat: Stopped polling", "info");
+      } else if (subcommand === "logout") {
+        // 停止轮询
+        engine.stopPolling();
+        // 获取当前账号并删除
+        const token = await getDefaultAccountToken();
+        if (token) {
+          await deleteToken(token.accountId);
+          await removeAccount(token.accountId);
+          ctx.ui.notify("WeChat: Logged out successfully", "info");
+        } else {
+          ctx.ui.notify("WeChat: Not logged in", "info");
+        }
       } else {
         ctx.ui.notify("Usage: /wechat login | status | start | stop", "info");
       }
