@@ -12,12 +12,15 @@
   },
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "latest",
+    "@types/qrcode-terminal": "^0.12.2",
     "typescript": "^5.8.0"
   },
   "engines": {
     "node": ">=22"
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   }
 }

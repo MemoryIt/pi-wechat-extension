@@ -52,8 +52,9 @@ async function handleLogin(ctx: ExtensionCommandContext) {
 
     // Display QR code using qrcode-terminal
     try {
-      const qrcodeTerminal = await import("qrcode-terminal");
-      qrcodeTerminal.default.generate(startResult.qrcodeUrl, { small: true }, (qr: string) => {
+      // qrcode-terminal is a CommonJS module, use require() for compatibility
+      const qrcodeTerminal = require("qrcode-terminal");
+      qrcodeTerminal.generate(startResult.qrcodeUrl, { small: true }, (qr: string) => {
         console.log(qr);
       });
       console.log("如果二维码未能成功展示，请用浏览器打开以下链接扫码：");
