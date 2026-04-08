@@ -21,7 +21,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("wechat", {
     description: "WeChat integration",
     getArgumentCompletions: (prefix) => {
-      const commands = ["login", "status", "logout"];
+      const commands = ["login", "status", "start", "stop", "logout"];
       const filtered = commands.filter((c) => c.startsWith(prefix));
       return filtered.length > 0 ? filtered.map((s) => ({ value: s, label: s })) : null;
     },
@@ -30,8 +30,6 @@ export default function (pi: ExtensionAPI) {
       
       if (subcommand === "login") {
         await handleLogin(ctx);
-      } else if (subcommand === "status") {
-        ctx.ui.notify("WeChat: Use /wechat login to connect", "info");
       } else if (subcommand === "status") {
         const token = await getDefaultAccountToken();
         if (token) {
