@@ -14,7 +14,7 @@
  *         └── sync.json
  */
 
-import { readFileSync, writeFileSync, chmodSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, chmodSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { logger } from "../util/logger.js";
 
@@ -102,8 +102,6 @@ export async function loadToken(accountId: string): Promise<WechatToken | null> 
 export async function deleteToken(accountId: string): Promise<void> {
   const path = getTokenPath(accountId);
   if (existsSync(path)) {
-    // 使用 fs 删除文件
-    const { unlinkSync } = require("node:fs");
     unlinkSync(path);
     logger.info(`Token deleted for account: ${accountId}`);
   }
