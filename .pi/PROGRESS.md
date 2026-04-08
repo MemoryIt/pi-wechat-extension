@@ -7,12 +7,13 @@
 - 登录流程 auth/login-qr.ts：扫码登录实现 ✅
 - 登录测试：扫码成功，返回 botToken/accountId/userId/baseUrl ✅
 - Phase 2: 存储登录凭证（storage/state.ts）✅
+- **Phase 3a: 消息接收（wechat.ts 骨架 + 长轮询 + 消息格式化 + triggerAi）** ✅
 
 ---
 
 ## Phase 3: 核心引擎（wechat.ts）
 
-### 3a: 消息接收 - 微信 → pi 会话
+### 3a: 消息接收 - 微信 → pi 会话 ✅
 **验证标准**：发微信消息 → pi 能看到并触发 AI 回复
 
 **核心功能**：
@@ -20,8 +21,10 @@
 - startPolling()：长轮询获取消息
 - handleMessage()：消息格式化
 - formatWechatMessage()：生成 `__WECHAT_REQ_xxx__[WeChat; name] content`
-- triggerAi()：pi.sendUserMessage({ triggerTurn: true })
+- triggerAi()：pi.sendMessage({ triggerTurn: true })
 - stopPolling()：中止轮询
+- 指数退避重试（consecutiveFailures）
+- syncCursor 持久化
 
 **不含**：队列、typing、agent_end 拦截
 
