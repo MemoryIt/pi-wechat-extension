@@ -150,6 +150,11 @@ async function handleLogin(ctx: ExtensionCommandContext) {
 
       ctx.ui.notify("✅ 与微信连接成功！", "info");
 
+      // 登录成功后自动启动轮询
+      engine.startPolling({ baseUrl: loginResult.baseUrl!, token: botToken }).catch((err) => {
+        ctx.ui.notify(`启动轮询失败: ${err.message}`, "error");
+      });
+
       // Output server response
       console.log("\n=== 登录成功 ===");
       console.log("服务器返回信息：");
