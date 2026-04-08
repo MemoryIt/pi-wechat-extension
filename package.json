@@ -1,0 +1,26 @@
+{
+  "name": "pi-wechat-extension",
+  "version": "0.0.1",
+  "description": "WeChat extension for pi coding agent",
+  "license": "MIT",
+  "author": "",
+  "type": "module",
+  "main": "index.ts",
+  "dependencies": {
+    "qrcode-terminal": "0.12.0",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "latest",
+    "@types/qrcode-terminal": "^0.12.2",
+    "typescript": "^5.8.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
