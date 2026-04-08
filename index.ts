@@ -33,7 +33,7 @@ export default function (pi: ExtensionAPI) {
       } else if (subcommand === "status") {
         const token = await getDefaultAccountToken();
         if (token) {
-          ctx.ui.notify(`WeChat: Connected (${token.accountId})
+          ctx.ui.notify(`WeChat: Logged in (${token.accountId})
 Connection State: ${engine.connectionState}`, "info");
         } else {
           ctx.ui.notify("WeChat: Not logged in", "info");
