@@ -1,7 +1,7 @@
 /**
- * 微信核心引擎 - Phase 3a: 消息接收（微信 → pi 会话）
+ * 微信核心引擎 - Phase 3a+3b: 消息接收 + 消息队列
  * 
- * 核心功能：
+ * Phase 3a 核心功能：
  * - WechatEngine 基础框架
  * - startPolling()：长轮询获取消息
  * - handleMessage()：消息格式化
@@ -9,7 +9,14 @@
  * - triggerAi()：pi.sendUserMessage({ triggerTurn: true })
  * - stopPolling()：中止轮询
  * 
- * 不含：队列、typing、agent_end 拦截
+ * Phase 3b 消息队列：
+ * - pendingMessages: Map<userId, Array<{ msg, requestId }>>
+ * - isAiProcessing: boolean
+ * - handleMessage()：AI 忙时加入队列，否则直接触发
+ * - triggerAi()：设置 isAiProcessing，写入 wechat_meta 隐藏消息
+ * - processNextMessage()：AI 完成后取下一条处理
+ * 
+ * 不含：typing、agent_end 拦截（Phase 3c）
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -53,6 +60,19 @@ export class WechatEngine {
 
   // 账号信息（运行时加载）
   private accountId: string | null = null;
+
+  // === Phase 3b: 消息队列状态 ===
+  // 消息队列：同一用户的多条消息排队（存储 msg + requestId）
+  private pendingMessages = new Map<string, Array<{ msg: WeixinMessage; requestId: string }>>();
+
+  // AI 是否正在处理（防止并发）
+  private isAiProcessing = false;
+
+  // 当前处理的 userId（闭包变量，供 agent_end 使用）
+  private currentUserId: string | null = null;
+
+  // AI 处理完成回调（由 agent_end 事件调用）
+  private onAiProcessingDone: (() => void) | null = null;
 
   // === getter ===
   get connectionState(): ConnectionState {
@@ -157,10 +177,38 @@ export class WechatEngine {
 
   /**
    * 触发 AI 处理微信消息
+   * 如果 AI 正在处理，将消息加入队列
    */
   async triggerAi(userId: string, msg: WeixinMessage, requestId: string): Promise<void> {
+    // 如果当前正在处理该用户，加入队列
+    if (this.isAiProcessing && this.currentUserId === userId) {
+      const queue = this.pendingMessages.get(userId) ?? [];
+      queue.push({ msg, requestId });
+      this.pendingMessages.set(userId, queue);
+      console.log(`[Wechat] User ${userId} is processing, queued message (queue size: ${queue.length})`);
+      return;
+    }
+
+    // 触发 AI 处理
+    await this.triggerAiForUser(userId, msg, requestId);
+  }
+
+  /**
+   * 触发 AI 处理（内部方法）
+   */
+  private async triggerAiForUser(userId: string, msg: WeixinMessage, requestId: string): Promise<void> {
+    this.currentUserId = userId;
+    this.isAiProcessing = true;
+
     // 格式化消息
     const formatted = this.formatWechatMessage(msg, requestId);
+
+    // 写入 wechat_meta 隐藏消息（用于 agent_end 追踪）
+    (pi.appendEntry as any)("wechat_meta", {
+      requestId,
+      userId,
+      timestamp: Date.now(),
+    });
 
     // 通过 pi 发送用户消息，触发 AI 回复
     // sendMessage 支持 triggerTurn: true 来触发 AI
@@ -172,6 +220,50 @@ export class WechatEngine {
       triggerTurn: true,
       deliverAs: "steer",
     });
+  }
+
+  /**
+   * AI 处理完成回调（由 agent_end 事件调用）
+   */
+  onAiDone(): void {
+    this.isAiProcessing = false;
+    this.currentUserId = null;
+
+    // 处理队列中的下一条消息
+    this.processNextMessage();
+  }
+
+  /**
+   * 处理队列中的下一条消息
+   */
+  private async processNextMessage(): Promise<void> {
+    // 使用 while 循环避免递归栈溢出
+    while (true) {
+      let processed = false;
+
+      for (const [userId, queue] of this.pendingMessages) {
+        if (queue.length > 0) {
+          const { msg, requestId } = queue.shift()!;
+          console.log(`[Wechat] Processing queued message for user ${userId} (remaining: ${queue.length})`);
+
+          try {
+            await this.triggerAiForUser(userId, msg, requestId);
+          } catch (err) {
+            console.error(`[Wechat] Failed to process queued message:`, err);
+            // 触发失败，重置状态并继续
+            this.isAiProcessing = false;
+            this.currentUserId = null;
+          }
+          processed = true;
+          break;
+        }
+      }
+
+      // 没有更多消息，退出循环
+      if (!processed) {
+        return;
+      }
+    }
   }
 
   /**
