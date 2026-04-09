@@ -8,7 +8,7 @@
 - 登录测试：扫码成功，返回 botToken/accountId/userId/baseUrl ✅
 - Phase 2: 存储登录凭证（storage/state.ts）✅
 - **Phase 3a: 消息接收（wechat.ts 骨架 + 长轮询 + 消息格式化 + triggerAi）** ✅
-- **Phase 3b: 消息队列（pendingMessages + isAiProcessing + triggerAi + processNextMessage）** ✅
+- **Phase 3b: 消息队列（pendingMessages + isAiProcessing + triggerAi + processNextMessage + setTimeout 时序修复）** ✅
 
 ---
 
@@ -22,12 +22,12 @@
 - startPolling()：长轮询获取消息
 - handleMessage()：消息格式化
 - formatWechatMessage()：生成 `__WECHAT_REQ_xxx__[WeChat; name] content`
-- triggerAi()：pi.sendMessage({ triggerTurn: true })
+- triggerAi()：pi.sendUserMessage(content, { deliverAs: "followUp" })
 - stopPolling()：中止轮询
 - 指数退避重试（consecutiveFailures）
 - syncCursor 持久化
 
-**不含**：队列、typing、agent_end 拦截
+**不含**：typing、agent_end 拦截
 
 ---
 
@@ -41,8 +41,11 @@
 - triggerAi()：设置 isAiProcessing，写入 wechat_meta 隐藏消息 ✅
 - onAiDone()：AI 完成回调 ✅
 - processNextMessage()：AI 完成后取下一条处理 ✅
+- agent_end → setTimeout(10) → onAiDone() ✅
 
-**不含**：typing、agent_end 拦截
+**⚠️ v0.65.2 时序问题**：agent_end 回调直接调用 sendUserMessage 有时序问题，需用 setTimeout(10) 延迟
+
+**不含**：typing
 
 ---
 

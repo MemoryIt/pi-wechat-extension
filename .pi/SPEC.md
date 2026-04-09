@@ -19,7 +19,7 @@
 |--------|------|
 | 消息交互模式 | 单主会话 + 消息前缀隔离 |
 | 账号支持 | 单账号（扫码登录） |
-| AI 触发方式 | `pi.sendUserMessage({ triggerTurn: true })` |
+| AI 触发方式 | `pi.sendUserMessage(content, { deliverAs: "followUp" })` |
 | WeChat 触发识别 | 通过 prompt 正则（`__WECHAT_REQ_ + [WeChat; name]`）识别 |
 | 临时状态传递 | `wechat_meta` 隐藏消息 + 闭包变量 |
 | 技术路线 | 复用 openclaw-weixin API/媒体模块 |
@@ -193,7 +193,9 @@ function generateRequestId(): string {
     ↓
 6. 写入 wechat_meta 隐藏消息：`pi.appendEntry("wechat_meta", { requestId, userId, timestamp })`
     ↓
-7. pi.sendUserMessage({ content: formatted, triggerTurn: true })
+7. pi.sendUserMessage(formatted, { deliverAs: "followUp" })
+    ↓
+8. ⚠️ v0.65.2 时序问题：agent_end 回调需用 setTimeout(10) 延迟调用 sendUserMessage
     ↓
 8. AI 开始生成 → before_agent_start → 发送 typing=1
     ↓
@@ -492,10 +494,9 @@ async triggerAiForUser(userId: string, message: string, requestId: string): Prom
   // 写入 wechat_meta 隐藏消息
   pi.appendEntry("wechat_meta", { requestId, userId, timestamp: Date.now() });
   
-  await pi.sendUserMessage({
-    content: message,
-    triggerTurn: true,
-    deliverAs: "steer",
+  // 注意：v0.65.2 agent_end 时序问题，用 followUp + setTimeout(10) 延迟
+  await pi.sendUserMessage(message, {
+    deliverAs: "followUp",
   });
 }
 ```
