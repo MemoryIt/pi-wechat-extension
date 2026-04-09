@@ -24,6 +24,7 @@ import type { WeixinMessage, MessageItem } from "./api/types";
 import { getUpdates, sendMessage, sendTyping } from "./api/api";
 import { ConnectionState } from "./types.js";
 import * as storage from "./storage/state.js";
+import { randomUUID } from "node:crypto";
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 
@@ -283,16 +284,21 @@ export class WechatEngine {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
+        // 构建完整的消息对象（grok 指出需要这些必填字段）
+        const msg: WeixinMessage = {
+          from_user_id: "",           // 必须为空，表示机器人发送
+          to_user_id: toUserId,        // 目标用户 ID
+          client_id: randomUUID(),     // 每条消息唯一，用于去重和路由
+          message_type: 2,             // 2 = BOT（机器人消息）
+          message_state: 2,            // 2 = FINISH（完成）
+          context_token: contextToken, // 会话上下文 token
+          item_list: [{ type: 1, text_item: { text } }], // 文本消息
+        };
+
         await sendMessage({
           baseUrl: wechatConfig.baseUrl,
           token: wechatConfig.token,
-          body: {
-            msg: {
-              to_user_id: toUserId,
-              context_token: contextToken,
-              item_list: [{ type: 1, text_item: { text } }],
-            },
-          },
+          body: { msg },
         });
         console.log(`[Wechat] Message sent to ${toUserId}`);
         return;

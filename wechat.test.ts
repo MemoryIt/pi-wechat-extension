@@ -82,17 +82,18 @@ describe("Phase 3c: 回复发送功能测试", () => {
       );
 
       expect(mockSendMessage).toHaveBeenCalledTimes(1);
-      expect(mockSendMessage).toHaveBeenCalledWith({
-        baseUrl: "https://ilinkai.weixin.qq.com",
-        token: "test_token",
-        body: {
-          msg: {
-            to_user_id: "user123",
-            context_token: "ctx_token",
-            item_list: [{ type: 1, text_item: { text: "Hello World" } }],
-          },
-        },
-      });
+      
+      // 验证调用参数（client_id 是动态 UUID，只验证存在）
+      const callArgs = mockSendMessage.mock.calls[0][0];
+      expect(callArgs.baseUrl).toBe("https://ilinkai.weixin.qq.com");
+      expect(callArgs.token).toBe("test_token");
+      expect(callArgs.body.msg.to_user_id).toBe("user123");
+      expect(callArgs.body.msg.context_token).toBe("ctx_token");
+      expect(callArgs.body.msg.from_user_id).toBe("");  // 必须为空
+      expect(callArgs.body.msg.message_type).toBe(2);   // BOT
+      expect(callArgs.body.msg.message_state).toBe(2);  // FINISH
+      expect(callArgs.body.msg.client_id).toMatch(/^[0-9a-f-]{36}$/); // UUID 格式
+      expect(callArgs.body.msg.item_list).toEqual([{ type: 1, text_item: { text: "Hello World" } }]);
     });
 
     it("should retry on failure and eventually succeed", async () => {
