@@ -12,8 +12,10 @@
   },
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "latest",
+    "@types/node": "^25.5.2",
     "@types/qrcode-terminal": "^0.12.2",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.3"
   },
   "engines": {
     "node": ">=22"
