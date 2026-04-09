@@ -88,9 +88,13 @@ Connection State: ${engine.connectionState}`, "info");
   });
 
   // === agent_end: AI 回复完成后处理队列 ===
+  // 注意：直接调用 sendUserMessage 有时序问题，使用 setTimeout 延迟
   pi.on("agent_end", async () => {
-    console.log("[Wechat] AI processing done, calling onAiDone()...");
-    engine.onAiDone();
+    console.log("[Wechat] AI processing done, scheduling onAiDone()...");
+    setTimeout(() => {
+      console.log("[Wechat] Calling onAiDone() after delay...");
+      engine.onAiDone();
+    }, 10);
   });
 }
 
