@@ -175,9 +175,19 @@ Connection State: ${engine.connectionState}`, "info");
     }
     engine.markRequestProcessed(requestId);
 
+    // 获取用户上下文
     const userCtx = engine.getUserContexts().get(userId ?? "");
+    
+    // 详细日志帮助诊断
+    console.log(`[Wechat] handleAgentEnd: requestId=${requestId}, userId=${userId}`);
+    console.log(`[Wechat] userContexts keys: ${JSON.stringify(Array.from(engine.getUserContexts().keys()))}`);
+    console.log(`[Wechat] userCtx: ${JSON.stringify(userCtx)}`);
+    
     if (!userCtx) {
       console.error(`[Wechat] UserContext not found for userId: ${userId}`);
+      console.error(`[Wechat] This means we don't have a contextToken for this user.`);
+      console.error(`[Wechat] The message may have arrived without a context_token.`);
+      console.error(`[Wechat] Skipping send and processing queue anyway.`);
       engine.onAiDone();
       return;
     }
@@ -198,7 +208,7 @@ Connection State: ${engine.connectionState}`, "info");
       return;
     }
 
-    console.log(`[Wechat] Sending reply to user ${userId}: ${replyText.slice(0, 50)}...`);
+    console.log(`[Wechat] Sending reply to user ${userId} with contextToken ${userCtx.contextToken ? 'present' : 'MISSING'}: ${replyText.slice(0, 50)}...`);
 
     // 发送回微信（带重试）
     try {
