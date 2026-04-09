@@ -11,7 +11,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "./auth/login-qr.js";
 import { saveToken, upsertAccount, getDefaultAccountToken, deleteToken, removeAccount, listAccounts } from "./storage/state.js";
-import { engine, setPi } from "./wechat.js";
+import { engine, setPi, setConfig } from "./wechat.js";
 
 export default function (pi: ExtensionAPI) {
   // 注入 pi 实例到 wechat engine
@@ -74,6 +74,7 @@ Connection State: ${engine.connectionState}`, "info");
   pi.on("session_start", async () => {
     const token = await getDefaultAccountToken();
     if (token) {
+      setConfig({ baseUrl: token.baseUrl, token: token.botToken });
       engine.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
         console.error("[Wechat] Polling error:", err.message);
       });
@@ -83,15 +84,158 @@ Connection State: ${engine.connectionState}`, "info");
   // === session_shutdown: 停止轮询 ===
   pi.on("session_shutdown", async () => {
     engine.stopPolling();
+    engine.reset();
   });
 
-  // === agent_end: AI 回复完成后处理队列 ===
+  // === before_agent_start: 识别 WeChat 触发 + 发送 typing=1 ===
+  pi.on("before_agent_start", async (event, ctx) => {
+    // 通过 prompt 正则判断是否是 WeChat 消息
+    const requestIdMatch = event.prompt?.match(/__WECHAT_REQ_([a-z0-9]+)__/);
+    const userMatch = event.prompt?.match(/\[WeChat; ([^\]]+)\]/);
+
+    // 不是 WeChat 消息，跳过
+    if (!userMatch) return;
+
+    const displayName = userMatch[1];
+    const requestId = requestIdMatch?.[1] ?? null;
+
+    // 通过 displayName 查找用户上下文
+    let userCtx = null;
+    for (const ctx of engine.getUserContexts().values()) {
+      if (ctx.displayName === displayName || ctx.userId === displayName) {
+        userCtx = ctx;
+        break;
+      }
+    }
+
+    if (!userCtx) {
+      console.log(`[Wechat] UserContext not found for displayName: ${displayName}`);
+      return;
+    }
+
+    // 保存当前用户和 requestId（闭包变量，供 turn_end 和 agent_end 使用）
+    engine.setCurrentRequest(requestId, userCtx.userId);
+
+    // 发送 typing=1 (TYPING)
+    await engine.sendTypingStatus(userCtx.userId, userCtx.contextToken, 1);
+
+    console.log(`[Wechat] before_agent_start: displayName=${displayName}, requestId=${requestId}`);
+  });
+
+  // === turn_end: 取消 typing ===
+  pi.on("turn_end", async (event, ctx) => {
+    const userId = engine.getCurrentUserId();
+    if (!userId) return;
+
+    const userCtx = engine.getUserContexts().get(userId);
+    if (!userCtx) return;
+
+    // 发送 typing=2 (CANCEL)
+    await engine.sendTypingStatus(userId, userCtx.contextToken, 2);
+  });
+
+  // === agent_end: AI 回复完成后发送回微信 ===
   // 注意：直接调用 sendUserMessage 有时序问题，使用 setTimeout 延迟
-  pi.on("agent_end", async () => {
-    setTimeout(() => {
-      engine.onAiDone();
+  pi.on("agent_end", async (event, ctx) => {
+    setTimeout(async () => {
+      await handleAgentEnd(event, ctx);
     }, 10);
   });
+
+  // === agent_end 处理函数 ===
+  async function handleAgentEnd(event: any, ctx: any) {
+    // 获取 requestId 和 userId：优先用闭包
+    const requestId = engine.getCurrentRequestId();
+    let userId = engine.getCurrentUserId();
+
+    if (!requestId || !userId) {
+      // 尝试从 session entries 中查找
+      try {
+        const entries = ctx.sessionManager?.getBranch?.() ?? [];
+        const wechatMeta = entries
+          .filter((e: any) => e.type === "custom" && e.customType === "wechat_meta")
+          .reverse()
+          .find((e: any) => e.data?.requestId === requestId);
+        userId = wechatMeta?.data?.userId ?? null;
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    if (!requestId || !userId) {
+      // 不是微信触发的 AI 回复，直接处理队列
+      engine.onAiDone();
+      return;
+    }
+
+    // 防止重复处理
+    if (engine.isRequestProcessed(requestId)) {
+      console.log(`[Wechat] Request ${requestId} already processed, skipping`);
+      return;
+    }
+    engine.markRequestProcessed(requestId);
+
+    const userCtx = engine.getUserContexts().get(userId ?? "");
+    if (!userCtx) {
+      console.error(`[Wechat] UserContext not found for userId: ${userId}`);
+      engine.onAiDone();
+      return;
+    }
+
+    // 提取 AI 回复
+    const assistantMsg = event.messages?.find?.((m: any) => m.role === "assistant");
+    if (!assistantMsg) {
+      console.log(`[Wechat] No assistant message found`);
+      engine.onAiDone();
+      return;
+    }
+
+    // 提取回复文本
+    const replyText = extractReplyText(assistantMsg);
+    if (!replyText) {
+      console.log(`[Wechat] No reply text extracted`);
+      engine.onAiDone();
+      return;
+    }
+
+    console.log(`[Wechat] Sending reply to user ${userId}: ${replyText.slice(0, 50)}...`);
+
+    // 发送回微信（带重试）
+    try {
+      await engine.sendMessageWithRetry(userId, userCtx.contextToken, replyText);
+    } catch (err: any) {
+      console.error(`[Wechat] Failed to send reply:`, err.message);
+      ctx.ui?.notify?.(`微信回复失败: ${err.message}`, "error");
+    }
+
+    // 处理队列中的下一条消息
+    engine.onAiDone();
+  }
+
+  // === 辅助函数：从 assistant 消息中提取回复文本 ===
+  function extractReplyText(assistantMsg: any): string | null {
+    // 支持多种格式
+    if (typeof assistantMsg.content === "string") {
+      return assistantMsg.content.trim();
+    }
+
+    if (Array.isArray(assistantMsg.content)) {
+      // content 是数组，取所有文本部分
+      const texts: string[] = [];
+      for (const block of assistantMsg.content) {
+        if (block.type === "text") {
+          texts.push(block.text ?? "");
+        }
+      }
+      return texts.join("\n").trim() || null;
+    }
+
+    if (assistantMsg.content?.text) {
+      return assistantMsg.content.text.trim();
+    }
+
+    return null;
+  }
 }
 
 async function handleLogin(ctx: ExtensionCommandContext) {
@@ -155,6 +299,9 @@ async function handleLogin(ctx: ExtensionCommandContext) {
       });
 
       ctx.ui.notify("✅ 与微信连接成功！", "info");
+
+      // 保存配置供 sendTyping 和 sendMessage 使用
+      setConfig({ baseUrl: loginResult.baseUrl!, token: botToken });
 
       // 登录成功后自动启动轮询
       engine.startPolling({ baseUrl: loginResult.baseUrl!, token: botToken }).catch((err) => {

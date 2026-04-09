@@ -21,14 +21,25 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { WeixinMessage, MessageItem } from "./api/types";
-import { getUpdates, sendMessage } from "./api/api";
-import { ConnectionState } from "./types";
+import { getUpdates, sendMessage, sendTyping } from "./api/api";
+import { ConnectionState } from "./types.js";
 import * as storage from "./storage/state.js";
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 
 // 全局 pi 实例（由 setPi 注入）
 let pi: ExtensionAPI;
+
+// 全局配置（由 setConfig 注入）
+interface WechatConfig {
+  baseUrl: string;
+  token: string;
+}
+let wechatConfig: WechatConfig | null = null;
+
+export function setConfig(config: WechatConfig): void {
+  wechatConfig = config;
+}
 
 // === 导出配置函数 ===
 
@@ -61,6 +72,16 @@ export class WechatEngine {
   // 账号信息（运行时加载）
   private accountId: string | null = null;
 
+  // === Phase 3c: 回复发送状态 ===
+  // 当前请求 ID（闭包变量，供 agent_end 使用）
+  private currentRequestId: string | null = null;
+
+  // 已处理的请求 ID + timestamp（用于防重 + 定期清理）
+  private processedRequests = new Map<string, number>();
+
+  // processedRequests 清理计数器
+  private cleanupCounter = 0;
+
   // === Phase 3b: 消息队列状态 ===
   // 消息队列：同一用户的多条消息排队（存储 msg + requestId）
   private pendingMessages = new Map<string, Array<{ msg: WeixinMessage; requestId: string }>>();
@@ -70,6 +91,9 @@ export class WechatEngine {
 
   // 当前处理的 userId（闭包变量，供 agent_end 使用）
   private currentUserId: string | null = null;
+
+  // 用户上下文映射（持久化到磁盘）
+  private userContexts = new Map<string, { userId: string; contextToken: string; displayName: string }>();
 
   // AI 处理完成回调（由 agent_end 事件调用）
   private onAiProcessingDone: (() => void) | null = null;
@@ -194,10 +218,151 @@ export class WechatEngine {
   }
 
   /**
+   * 获取用户上下文映射（用于遍历查找）
+   */
+  getUserContexts(): Map<string, { userId: string; contextToken: string; displayName: string }> {
+    return this.userContexts;
+  }
+
+  /**
+   * 获取当前用户 ID
+   */
+  getCurrentUserId(): string | null {
+    return this.currentUserId;
+  }
+
+  /**
+   * 获取当前请求 ID
+   */
+  getCurrentRequestId(): string | null {
+    return this.currentRequestId;
+  }
+
+  /**
+   * 设置用户上下文（用于 before_agent_start 保存）
+   */
+  setCurrentRequest(requestId: string | null, userId: string | null): void {
+    this.currentRequestId = requestId;
+    this.currentUserId = userId;
+  }
+
+  /**
+   * 发送 typing 状态
+   */
+  async sendTypingStatus(userId: string, contextToken: string, status: 1 | 2): Promise<void> {
+    if (!wechatConfig) return;
+    try {
+      await sendTyping({
+        baseUrl: wechatConfig.baseUrl,
+        token: wechatConfig.token,
+        body: {
+          ilink_user_id: userId,
+          typing_ticket: contextToken,
+          status, // 1=TYPING, 2=CANCEL
+        },
+      });
+    } catch (err) {
+      console.error(`[Wechat] sendTyping failed:`, err);
+    }
+  }
+
+  /**
+   * 发送消息到微信（带重试）
+   */
+  async sendMessageWithRetry(
+    toUserId: string,
+    contextToken: string,
+    text: string,
+    maxRetries: number = 3
+  ): Promise<void> {
+    if (!wechatConfig) {
+      throw new Error("Wechat config not set");
+    }
+
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await sendMessage({
+          baseUrl: wechatConfig.baseUrl,
+          token: wechatConfig.token,
+          body: {
+            msg: {
+              to_user_id: toUserId,
+              context_token: contextToken,
+              item_list: [{ type: 1, text_item: { text } }],
+            },
+          },
+        });
+        console.log(`[Wechat] Message sent to ${toUserId}`);
+        return;
+      } catch (err: any) {
+        lastError = err;
+        console.error(`[Wechat] sendMessage attempt ${attempt} failed:`, err.message);
+        if (attempt < maxRetries) {
+          // 指数退避：1s, 2s, 4s
+          await this.sleep(1000 * Math.pow(2, attempt - 1));
+        }
+      }
+    }
+
+    throw lastError ?? new Error("sendMessage failed");
+  }
+
+  /**
+   * 清理旧的 processedRequests（1 小时前）
+   */
+  cleanupProcessedRequests(): void {
+    const oneHourAgo = Date.now() - 3600000;
+    for (const [id, timestamp] of this.processedRequests) {
+      if (timestamp < oneHourAgo) {
+        this.processedRequests.delete(id);
+      }
+    }
+    this.cleanupCounter = 0;
+    console.log(`[Wechat] Cleaned up processedRequests, remaining: ${this.processedRequests.size}`);
+  }
+
+  /**
+   * 检查请求是否已处理
+   */
+  isRequestProcessed(requestId: string): boolean {
+    return this.processedRequests.has(requestId);
+  }
+
+  /**
+   * 标记请求已处理
+   */
+  markRequestProcessed(requestId: string): void {
+    this.processedRequests.set(requestId, Date.now());
+    this.cleanupCounter++;
+
+    // 每 50 次处理清理一次
+    if (this.cleanupCounter >= 50) {
+      this.cleanupProcessedRequests();
+    }
+  }
+
+  /**
+   * 清理所有状态（session_shutdown 时调用）
+   */
+  reset(): void {
+    this.pendingMessages.clear();
+    this.processedRequests.clear();
+    this.currentUserId = null;
+    this.currentRequestId = null;
+    this.isAiProcessing = false;
+    this.cleanupCounter = 0;
+    this.abortController = new AbortController(); // 重建（新 abort signal）
+    console.log("[Wechat] Engine state reset");
+  }
+
+  /**
    * 触发 AI 处理（内部方法）
    */
   private async triggerAiForUser(userId: string, msg: WeixinMessage, requestId: string): Promise<void> {
     this.currentUserId = userId;
+    this.currentRequestId = requestId;
     this.isAiProcessing = true;
 
     // 格式化消息
@@ -250,6 +415,7 @@ export class WechatEngine {
             // 触发失败，重置状态并继续
             this.isAiProcessing = false;
             this.currentUserId = null;
+            this.currentRequestId = null;
           }
           processed = true;
           break;
@@ -258,6 +424,9 @@ export class WechatEngine {
 
       // 没有更多消息，退出循环
       if (!processed) {
+        this.isAiProcessing = false;
+        this.currentUserId = null;
+        this.currentRequestId = null;
         return;
       }
     }
@@ -271,6 +440,16 @@ export class WechatEngine {
     const userLabel = `[WeChat; ${msg.from_user_id ?? "unknown"}]`;
 
     const parts: string[] = [];
+
+    // 如果有 context_token，更新用户上下文
+    if (msg.context_token) {
+      const existing = this.userContexts.get(msg.from_user_id ?? "");
+      this.userContexts.set(msg.from_user_id ?? "", {
+        userId: msg.from_user_id ?? "",
+        contextToken: msg.context_token,
+        displayName: existing?.displayName ?? msg.from_user_id ?? "unknown",
+      });
+    }
 
     for (const item of msg.item_list ?? []) {
       switch (item.type) {

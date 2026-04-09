@@ -9,6 +9,7 @@
 - Phase 2: 存储登录凭证（storage/state.ts）✅
 - **Phase 3a: 消息接收（wechat.ts 骨架 + 长轮询 + 消息格式化 + triggerAi）** ✅
 - **Phase 3b: 消息队列（pendingMessages + isAiProcessing + triggerAi + processNextMessage + setTimeout 时序修复）** ✅
+- **Phase 3c: 回复发送（processedRequests + before_agent_start + turn_end + agent_end + sendMessageWithRetry + reset）** ✅
 
 ---
 
@@ -49,17 +50,20 @@
 
 ---
 
-### 3c: 回复发送 - pi 回复 → 微信
+### 3c: 回复发送 - pi 回复 → 微信 ✅
 **验证标准**：发微信消息 → 收到微信回复
 
 **核心功能**：
 - currentUserId / currentRequestId 闭包变量
 - processedRequests: Map<requestId, timestamp> 防重
-- before_agent_start：解析 prompt，保存 requestId/userId，发送 typing=1
-- turn_end：发送 typing=2
-- agent_end：防止重复，提取回复，sendMessageWithRetry() 发送
-
-**不含**：队列自动处理（已在 3b 实现）
+- before_agent_start：解析 prompt，保存 requestId/userId，发送 typing=1 ✅
+- turn_end：发送 typing=2 ✅
+- agent_end：防止重复，提取回复，sendMessageWithRetry() 发送 ✅
+- sendMessageWithRetry()：3次重试（1s, 2s, 4s） ✅
+- sendTypingStatus()：typing 状态发送 ✅
+- cleanupProcessedRequests()：清理 1 小时前请求 ✅
+- reset()：清理所有状态 ✅
+- setConfig()：注入 wechatConfig ✅
 
 ---
 
