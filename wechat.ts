@@ -211,10 +211,9 @@ export class WechatEngine {
     });
 
     // 通过 pi 发送用户消息，触发 AI 回复
-    // 使用 sendUserMessage 并设置 triggerTurn: true
-    (pi.sendUserMessage as any)({
-      content: formatted,
-      triggerTurn: true,
+    // sendUserMessage 会自动触发 LLM turn
+    // 第一个参数是 content (string)，第二个是 options
+    (pi.sendUserMessage as any)(formatted, {
       deliverAs: "steer",
     });
   }
