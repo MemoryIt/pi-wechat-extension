@@ -215,7 +215,6 @@ export class WechatEngine {
     // sendUserMessage 会自动触发 LLM turn
     console.log(`[Wechat] Calling sendUserMessage with content length: ${formatted.length}`);
     (pi.sendUserMessage as any)(formatted, {
-      triggerTurn: true,
       deliverAs: "steer",
     });
     console.log(`[Wechat] sendUserMessage completed`);
