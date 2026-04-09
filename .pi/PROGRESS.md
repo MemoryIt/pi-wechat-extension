@@ -106,3 +106,14 @@
 ---
 
 ## Open Issues / TODO
+
+## 已知局限性
+
+- **Tool Call 场景**：当 AI 调用工具（如执行命令）时，微信端只能看到工具调用前的回复，后续的工具执行结果和最终回复不会发送
+- **多轮对话**：如果 AI 输出多个消息块，只有第一个会发送
+- **Typing 状态**：before_agent_start/turn_end 发送 typing=1/2 未实际验证
+
+## Open Issues
+
+- [ ] Typing 状态：验证并修复 typing 状态发送
+- [ ] Tool Call 场景：支持多消息块发送（turn_end 事件中发送每个回复）
