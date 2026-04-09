@@ -86,6 +86,12 @@ Connection State: ${engine.connectionState}`, "info");
     console.log("[Wechat] Stopping polling after session_shutdown...");
     engine.stopPolling();
   });
+
+  // === agent_end: AI 回复完成后处理队列 ===
+  pi.on("agent_end", async () => {
+    console.log("[Wechat] AI processing done, calling onAiDone()...");
+    engine.onAiDone();
+  });
 }
 
 async function handleLogin(ctx: ExtensionCommandContext) {
