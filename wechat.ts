@@ -54,6 +54,9 @@ export class WechatEngine {
   // 账号信息（运行时加载）
   private accountId: string | null = null;
 
+  // 轮询运行标志（防止 stop 后收到响应仍处理）
+  private isRunning = false;
+
   // === getter ===
   get connectionState(): ConnectionState {
     return this.state.connectionState;
@@ -72,6 +75,7 @@ export class WechatEngine {
     this.abortController.abort();
     // 立即更新状态，不用等轮询循环退出
     this.state.connectionState = "disconnected";
+    this.isRunning = false;
   }
 
   /**
@@ -83,6 +87,8 @@ export class WechatEngine {
       this.abortController = new AbortController();
     }
     const abortSignal = this.abortController.signal;
+
+    this.isRunning = true;
 
     // 获取默认账号
     const tokenData = await storage.getDefaultAccountToken();
@@ -136,12 +142,16 @@ export class WechatEngine {
     }
 
     this.state.connectionState = "disconnected";
+    this.isRunning = false;
   }
 
   /**
    * 处理收到的微信消息
    */
   async handleMessage(msg: WeixinMessage, opts: { baseUrl: string; token: string }): Promise<void> {
+    // 如果已停止，不处理任何消息
+    if (!this.isRunning) return;
+
     const userId = msg.from_user_id ?? "unknown";
     const requestId = this.generateRequestId();
 
