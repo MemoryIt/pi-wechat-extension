@@ -74,7 +74,6 @@ Connection State: ${engine.connectionState}`, "info");
   pi.on("session_start", async () => {
     const token = await getDefaultAccountToken();
     if (token) {
-      console.log("[Wechat] Starting polling after session_start...");
       engine.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
         console.error("[Wechat] Polling error:", err.message);
       });
@@ -83,16 +82,13 @@ Connection State: ${engine.connectionState}`, "info");
 
   // === session_shutdown: 停止轮询 ===
   pi.on("session_shutdown", async () => {
-    console.log("[Wechat] Stopping polling after session_shutdown...");
     engine.stopPolling();
   });
 
   // === agent_end: AI 回复完成后处理队列 ===
   // 注意：直接调用 sendUserMessage 有时序问题，使用 setTimeout 延迟
   pi.on("agent_end", async () => {
-    console.log("[Wechat] AI processing done, scheduling onAiDone()...");
     setTimeout(() => {
-      console.log("[Wechat] Calling onAiDone() after delay...");
       engine.onAiDone();
     }, 10);
   });
