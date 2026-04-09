@@ -213,9 +213,11 @@ export class WechatEngine {
 
     // 通过 pi 发送用户消息，触发 AI 回复
     // sendUserMessage 会自动触发 LLM turn
+    // 注意：agent_end 回调中调用 sendUserMessage 有时序问题
+    // 使用 followUp 让消息在 agent 完全结束后再触发
     console.log(`[Wechat] Calling sendUserMessage with content length: ${formatted.length}`);
     (pi.sendUserMessage as any)(formatted, {
-      deliverAs: "steer",
+      deliverAs: "followUp",
     });
     console.log(`[Wechat] sendUserMessage completed`);
   }
