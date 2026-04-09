@@ -211,12 +211,9 @@ export class WechatEngine {
     });
 
     // 通过 pi 发送用户消息，触发 AI 回复
-    // sendMessage 支持 triggerTurn: true 来触发 AI
-    (pi.sendMessage as any)({
-      customType: "user",
+    // 使用 sendUserMessage 并设置 triggerTurn: true
+    (pi.sendUserMessage as any)({
       content: formatted,
-      display: "user",
-    }, {
       triggerTurn: true,
       deliverAs: "steer",
     });
