@@ -8,6 +8,7 @@
 - 登录测试：扫码成功，返回 botToken/accountId/userId/baseUrl ✅
 - Phase 2: 存储登录凭证（storage/state.ts）✅
 - **Phase 3a: 消息接收（wechat.ts 骨架 + 长轮询 + 消息格式化 + triggerAi）** ✅
+- **Phase 3b: 消息队列（pendingMessages + isAiProcessing + triggerAi + processNextMessage）** ✅
 
 ---
 
@@ -30,15 +31,16 @@
 
 ---
 
-### 3b: 消息队列 - 同一用户消息顺序处理
+### 3b: 消息队列 - 同一用户消息顺序处理 ✅
 **验证标准**：用户连发3条消息 → AI 按顺序逐条回复
 
 **核心功能**：
-- pendingMessages: Map<userId, Array<{ msg, requestId }>>
-- isAiProcessing: boolean
-- handleMessage()：AI 忙时加入队列，否则直接触发
-- triggerAi()：设置 isAiProcessing，写入 wechat_meta 隐藏消息
-- processNextMessage()：AI 完成后取下一条处理
+- pendingMessages: Map<userId, Array<{ msg, requestId }>> ✅
+- isAiProcessing: boolean ✅
+- handleMessage()：AI 忙时加入队列，否则直接触发 ✅
+- triggerAi()：设置 isAiProcessing，写入 wechat_meta 隐藏消息 ✅
+- onAiDone()：AI 完成回调 ✅
+- processNextMessage()：AI 完成后取下一条处理 ✅
 
 **不含**：typing、agent_end 拦截
 
