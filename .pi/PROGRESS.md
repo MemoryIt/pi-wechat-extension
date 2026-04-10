@@ -87,7 +87,7 @@ Use steer() or followUp() to queue messages, or wait for completion.
 
 ---
 
-### 3d: 稳定性 - 长时运行与异常处理 ✅
+### 3d: 稳定性 - 长时运行与异常处理
 **验证标准**：长时间运行稳定，异常情况正确处理
 
 **核心功能**：
