@@ -8,8 +8,32 @@
 - 登录测试：扫码成功，返回 botToken/accountId/userId/baseUrl ✅
 - Phase 2: 存储登录凭证（storage/state.ts）✅
 - **Phase 3a: 消息接收（wechat.ts 骨架 + 长轮询 + 消息格式化 + triggerAi）** ✅
-- **Phase 3b: 消息队列（pendingMessages + isAiProcessing + triggerAi + processNextMessage + setTimeout 时序修复）** ✅
+- **Phase 3b: 消息队列（pendingMessages + isAiProcessing + triggerAi + safelyTriggerNext + setTimeout 时序修复）** ✅
 - **Phase 3c: 回复发送（processedRequests + before_agent_start + turn_end + agent_end + sendMessageWithRetry + reset）** ✅
+
+---
+
+## Bug Fix: 消息队列时序问题 (2026-04-10)
+
+**问题**：微信用户连发多条消息时，只能收到第一条回复，后续消息报错
+```
+Extension "<runtime>" error: Agent is already processing a prompt. 
+Use steer() or followUp() to queue messages, or wait for completion.
+```
+
+**根因**：agent_end + setTimeout(10) 仍不够延迟，followUp 在 agent 未完全 settled 时调用
+
+**修复方案**（基于 Grok 分析 pi issue #2110, #2860）：
+- 用 safelyTriggerNext() 替代 processNextMessage()
+- setTimeout(20ms) + 指数退避（20→30→45ms）
+- 重试机制：最多 3 次
+- 先 peek，成功后再 shift
+
+**修改文件**：
+- wechat.ts: 重写 onAiDone() 和新增 safelyTriggerNext()
+- index.ts: agent_end 延迟从 10ms → 20ms
+
+**验证**：微信连发 3 条消息，正常顺序回复，无报错 ✅
 
 ---
 
@@ -28,8 +52,6 @@
 - 指数退避重试（consecutiveFailures）
 - syncCursor 持久化
 
-**不含**：typing、agent_end 拦截
-
 ---
 
 ### 3b: 消息队列 - 同一用户消息顺序处理 ✅
@@ -41,12 +63,10 @@
 - handleMessage()：AI 忙时加入队列，否则直接触发 ✅
 - triggerAi()：设置 isAiProcessing，写入 wechat_meta 隐藏消息 ✅
 - onAiDone()：AI 完成回调 ✅
-- processNextMessage()：AI 完成后取下一条处理 ✅
-- agent_end → setTimeout(10) → onAiDone() ✅
+- safelyTriggerNext()：AI 完成后安全处理下一条（带重试） ✅
+- agent_end → setTimeout(20) → onAiDone() ✅
 
-**⚠️ v0.65.2 时序问题**：agent_end 回调直接调用 sendUserMessage 有时序问题，需用 setTimeout(10) 延迟
-
-**不含**：typing
+**时序问题修复**：agent_end 回调需用 setTimeout(20) 延迟 + safelyTriggerNext() 重试机制
 
 ---
 
@@ -67,7 +87,7 @@
 
 ---
 
-### 3d: 稳定性 - 长时运行与异常处理
+### 3d: 稳定性 - 长时运行与异常处理 ✅
 **验证标准**：长时间运行稳定，异常情况正确处理
 
 **核心功能**：

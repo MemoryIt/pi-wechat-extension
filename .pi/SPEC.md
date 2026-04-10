@@ -195,15 +195,19 @@ function generateRequestId(): string {
     ↓
 7. pi.sendUserMessage(formatted, { deliverAs: "followUp" })
     ↓
-8. ⚠️ v0.65.2 时序问题：agent_end 回调需用 setTimeout(10) 延迟调用 sendUserMessage
+8. ⚠️ agent_end 时序问题修复（见 issue #2110, #2860）：
+   - agent_end 回调使用 setTimeout(20) 延迟
+   - onAiDone() 调用 safelyTriggerNext()
+   - safelyTriggerNext() 使用 setTimeout(20) + 指数退避重试（20→30→45ms）
+   - 最多重试 3 次
     ↓
-8. AI 开始生成 → before_agent_start → 发送 typing=1
+9. AI 开始生成 → before_agent_start → 发送 typing=1
     ↓
-9. AI 生成完成 → turn_end → 发送 typing=2
+10. AI 生成完成 → turn_end → 发送 typing=2
     ↓
-10. agent_end 拦截 → 从 wechat_meta 查找 requestId → 提取回复 → 发送
+11. agent_end 拦截 → 从 wechat_meta 查找 requestId → 提取回复 → 发送
     ↓
-11. processNextMessage() 处理队列中的下一条
+12. safelyTriggerNext(userId) 安全地处理队列中的下一条
 ```
 
 ---
@@ -359,12 +363,8 @@ pi.on("agent_end", async (event, ctx) => {
     ctx.ui.notify(`微信回复失败: ${err.message}`, "error");
   }
   
-  // 重置状态（无论成功失败）
-  engine.isAiProcessing = false;
-  engine.currentUserId = null;
-  
-  // 处理队列中的下一条消息
-  await engine.processNextMessage();
+  // 重置状态
+  engine.onAiDone(); // → safelyTriggerNext(userId)
 });
 ```
 
@@ -494,44 +494,43 @@ async triggerAiForUser(userId: string, message: string, requestId: string): Prom
   // 写入 wechat_meta 隐藏消息
   pi.appendEntry("wechat_meta", { requestId, userId, timestamp: Date.now() });
   
-  // 注意：v0.65.2 agent_end 时序问题，用 followUp + setTimeout(10) 延迟
+  // 使用 followUp，队列处理由 safelyTriggerNext 负责
   await pi.sendUserMessage(message, {
     deliverAs: "followUp",
   });
 }
 ```
 
-### 6.3 processNextMessage
+### 6.3 safelyTriggerNext
 
 ```typescript
-async processNextMessage(): Promise<void> {
-  // 使用 while 循环避免递归栈溢出
-  while (true) {
-    let processed = false;
-    
-    for (const [userId, queue] of this.pendingMessages) {
-      if (queue.length > 0) {
-        const { msg, requestId } = queue.shift()!;
-        const formatted = this.formatWechatMessage(msg, requestId);
-        
-        try {
-          await this.triggerAiForUser(userId, formatted, requestId);
-        } catch (err) {
-          // 触发失败，重置状态并继续
-          this.isAiProcessing = false;
-          this.currentUserId = null;
-        }
-        processed = true;
-        break;
-      }
-    }
-    
-    // 没有更多消息，退出循环
-    if (!processed) {
+private safelyTriggerNext(userId: string, retryCount = 0): void {
+  const MAX_RETRY = 3;
+  const BASE_DELAY = 20;
+
+  setTimeout(() => {
+    const queue = this.pendingMessages.get(userId);
+    if (!queue?.length) {
       this.isAiProcessing = false;
       return;
     }
-  }
+
+    try {
+      const { msg, requestId } = queue[0]; // peek
+      this.triggerAiForUser(userId, msg, requestId);
+      queue.shift(); // 成功后再移除
+    } catch (err: any) {
+      if (err.message?.includes("already processing") && retryCount < MAX_RETRY) {
+        console.warn(`[Wechat] Agent still busy, retry ${retryCount + 1}/${MAX_RETRY}`);
+        this.safelyTriggerNext(userId, retryCount + 1);
+      } else {
+        queue.shift();
+        console.error(`[Wechat] Failed to process queued message: ${err.message}`);
+        this.isAiProcessing = false;
+        this.safelyTriggerNext(userId);
+      }
+    }
+  }, BASE_DELAY * Math.pow(1.5, retryCount)); // 20 → 30 → 45ms
 }
 ```
 
