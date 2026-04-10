@@ -392,50 +392,58 @@ export class WechatEngine {
 
   /**
    * AI 处理完成回调（由 agent_end 事件调用）
+   * 使用 safelyTriggerNext 避免 agent_end 时序问题
    */
   onAiDone(): void {
+    const userId = this.currentUserId;
     this.isAiProcessing = false;
     this.currentUserId = null;
+    this.currentRequestId = null;
 
-    // 处理队列中的下一条消息
-    this.processNextMessage();
+    // 安全地处理队列中的下一条消息
+    if (userId) {
+      this.safelyTriggerNext(userId);
+    }
   }
 
   /**
-   * 处理队列中的下一条消息
+   * 安全地触发下一条消息处理
+   * 使用 setTimeout(20ms) 避免 agent_end 时序问题
+   * 带重试机制，指数退避
    */
-  private async processNextMessage(): Promise<void> {
-    // 使用 while 循环避免递归栈溢出
-    while (true) {
-      let processed = false;
+  private safelyTriggerNext(userId: string, retryCount = 0): void {
+    const MAX_RETRY = 3;
+    const BASE_DELAY = 20;
 
-      for (const [userId, queue] of this.pendingMessages) {
-        if (queue.length > 0) {
-          const { msg, requestId } = queue.shift()!;
-          console.log(`[Wechat] Processing queued message for user ${userId} (remaining: ${queue.length})`);
-
-          try {
-            await this.triggerAiForUser(userId, msg, requestId);
-          } catch (err) {
-            console.error(`[Wechat] Failed to process queued message:`, err);
-            // 触发失败，重置状态并继续
-            this.isAiProcessing = false;
-            this.currentUserId = null;
-            this.currentRequestId = null;
-          }
-          processed = true;
-          break;
-        }
-      }
-
-      // 没有更多消息，退出循环
-      if (!processed) {
+    setTimeout(() => {
+      const queue = this.pendingMessages.get(userId);
+      if (!queue?.length) {
+        // 队列为空，重置状态
         this.isAiProcessing = false;
-        this.currentUserId = null;
-        this.currentRequestId = null;
         return;
       }
-    }
+
+      try {
+        // 先 peek，不 shift（成功后再移除）
+        const { msg, requestId } = queue[0];
+        console.log(`[Wechat] Safely triggering next message for user ${userId} (retry: ${retryCount})`);
+        
+        this.triggerAiForUser(userId, msg, requestId);
+        queue.shift(); // 成功发送后再移除
+      } catch (err: any) {
+        if (err.message?.includes("already processing") && retryCount < MAX_RETRY) {
+          console.warn(`[Wechat] Agent still busy, retry ${retryCount + 1}/${MAX_RETRY}`);
+          this.safelyTriggerNext(userId, retryCount + 1);
+        } else {
+          // 彻底失败：移除并记录
+          queue.shift();
+          console.error(`[Wechat] Failed to process queued message: ${err.message}`);
+          // 重置状态，尝试处理队列中的下一条
+          this.isAiProcessing = false;
+          this.safelyTriggerNext(userId);
+        }
+      }
+    }, BASE_DELAY * Math.pow(1.5, retryCount)); // 20 → 30 → 45ms
   }
 
   /**

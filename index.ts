@@ -135,11 +135,11 @@ Connection State: ${engine.connectionState}`, "info");
   });
 
   // === agent_end: AI 回复完成后发送回微信 ===
-  // 注意：直接调用 sendUserMessage 有时序问题，使用 setTimeout 延迟
+  // 使用 setTimeout(20) 避免 agent_end 时序问题（见 issue #2110, #2860）
   pi.on("agent_end", async (event, ctx) => {
     setTimeout(async () => {
       await handleAgentEnd(event, ctx);
-    }, 10);
+    }, 20);
   });
 
   // === agent_end 处理函数 ===
