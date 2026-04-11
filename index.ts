@@ -198,10 +198,23 @@ Connection State: ${engine.connectionState}`, "info");
       return;
     }
 
-    // 提取 AI 回复
-    const assistantMsg = event.messages?.find?.((m: any) => m.role === "assistant");
+    // 提取 AI 回复：取最后一个有内容的 assistant 消息（支持 tool call 场景）
+    const assistantMessages = event.messages?.filter?.((m: any) => m.role === "assistant") ?? [];
+    console.log(`[Wechat] Found ${assistantMessages.length} assistant message(s) in event.messages`);
+    
+    // 找到最后一个有内容的 assistant 消息
+    let assistantMsg = null;
+    for (let i = assistantMessages.length - 1; i >= 0; i--) {
+      const msg = assistantMessages[i];
+      const text = extractReplyText(msg);
+      if (text) {
+        assistantMsg = msg;
+        break;
+      }
+    }
+    
     if (!assistantMsg) {
-      console.log(`[Wechat] No assistant message found`);
+      console.log(`[Wechat] No assistant message with content found`);
       engine.onAiDone();
       return;
     }
