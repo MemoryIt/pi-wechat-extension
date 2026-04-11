@@ -15,3 +15,6 @@ coverage/
 
 *.log
 .DS_Store
+
+# pnpm
+pnpm-lock.yaml
