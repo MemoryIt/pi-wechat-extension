@@ -122,23 +122,29 @@ Connection State: ${engine.connectionState}`, "info");
     console.log(`[Wechat] before_agent_start: displayName=${displayName}, requestId=${requestId}`);
   });
 
-  // === turn_end: 取消 typing ===
+  // === turn_end: 不再取消 typing（新版方案：只在 agent_end 完成后取消）===
+  // 新方案：只发最后一条消息，typing=1 保持到 agent_end
   pi.on("turn_end", async (event, ctx) => {
-    const userId = engine.getCurrentUserId();
-    if (!userId) return;
-
-    const userCtx = engine.getUserContexts().get(userId);
-    if (!userCtx) return;
-
-    // 发送 typing=2 (CANCEL)
-    await engine.sendTypingStatus(userId, userCtx.contextToken, 2);
+    // 空操作，不再取消 typing
   });
 
   // === agent_end: AI 回复完成后发送回微信 ===
+  // 新版方案：只发最后一条消息，发送完成后取消 typing
   // 使用 setTimeout(20) 避免 agent_end 时序问题（见 issue #2110, #2860）
   pi.on("agent_end", async (event, ctx) => {
     setTimeout(async () => {
       await handleAgentEnd(event, ctx);
+      
+      // 👇 新版：发送 typing=2 取消"正在输入"
+      // 只在微信触发的回复才取消 typing
+      const userId = engine.getCurrentUserId();
+      if (userId) {
+        const userCtx = engine.getUserContexts().get(userId);
+        if (userCtx) {
+          await engine.sendTypingStatus(userId, userCtx.contextToken, 2);
+          console.log(`[Wechat] Sent typing=2 (CANCEL) for user ${userId}`);
+        }
+      }
     }, 20);
   });
 
