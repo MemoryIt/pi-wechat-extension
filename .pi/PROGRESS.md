@@ -9,7 +9,8 @@
 - Phase 2: 存储登录凭证（storage/state.ts）✅
 - **Phase 3a: 消息接收（wechat.ts 骨架 + 长轮询 + 消息格式化 + triggerAi）** ✅
 - **Phase 3b: 消息队列（pendingMessages + isAiProcessing + triggerAi + safelyTriggerNext + setTimeout 时序修复）** ✅
-- **Phase 3c: 回复发送（processedRequests + before_agent_start + turn_end + agent_end + sendMessageWithRetry + reset）** ✅
+- **Phase 3c: 回复发送（processedRequests + before_agent_start + agent_end + sendMessageWithRetry + reset）** ✅
+- **新版方案：只发最后一条消息（解决 tool call 和多消息块问题）** ✅
 
 ---
 
@@ -34,6 +35,26 @@ Use steer() or followUp() to queue messages, or wait for completion.
 - index.ts: agent_end 延迟从 10ms → 20ms
 
 **验证**：微信连发 3 条消息，正常顺序回复，无报错 ✅
+
+---
+
+## Bug Fix: 只发最后一条消息 (2026-04-11)
+
+**问题**：Tool call 场景下，微信端只能看到第一条回复，看不到最终回复
+
+**根因**：
+1. `event.messages?.find()` 只取第一个 assistant 消息
+2. Tool call 后有多个 assistant 消息，需要取最后一个
+
+**修复方案**：
+- 改为从后往前遍历，找到最后一个有内容的 assistant 消息
+- `turn_end` 改为空操作，不取消 typing
+- `agent_end` 在发送回复后发送 `typing=2`
+
+**修改文件**：
+- index.ts: 修改 `handleAgentEnd()` 取最后一条消息
+
+**验证**：微信发消息触发 tool call，只收到最终回复 ✅
 
 ---
 
@@ -77,13 +98,19 @@ Use steer() or followUp() to queue messages, or wait for completion.
 - currentUserId / currentRequestId 闭包变量
 - processedRequests: Map<requestId, timestamp> 防重
 - before_agent_start：解析 prompt，保存 requestId/userId，发送 typing=1 ✅
-- turn_end：发送 typing=2 ✅
-- agent_end：防止重复，提取回复，sendMessageWithRetry() 发送 ✅
+- turn_end：空操作（新版方案） ✅
+- agent_end：防止重复，提取**最后一个**回复，sendMessageWithRetry() 发送 ✅
+- agent_end：发送 typing=2 取消"正在输入" ✅
 - sendMessageWithRetry()：3次重试（1s, 2s, 4s） ✅
 - sendTypingStatus()：typing 状态发送 ✅
 - cleanupProcessedRequests()：清理 1 小时前请求 ✅
 - reset()：清理所有状态 ✅
 - setConfig()：注入 wechatConfig ✅
+
+**新版方案特点**：
+- 只发 AI 的最终回复（解决 tool call 中间结果问题）
+- 只取最后一个有内容的 assistant 消息
+- typing=1 保持到 agent_end，然后发送 typing=2
 
 ---
 
@@ -103,15 +130,16 @@ Use steer() or followUp() to queue messages, or wait for completion.
 ## Phase 4: 与 pi-coding-agent 连接
 
 ### 4a: 生命周期事件
-- session_start：加载凭证，启动长轮询
+- session_start：加载凭证，启动轮询
 - session_shutdown：停止轮询，清理状态
 
 ### 4b: AI 触发事件
 - before_agent_start：识别微信消息，发送 typing=1
-- turn_end：发送 typing=2 取消
+- turn_end：空操作（新版方案，不取消 typing）
+- agent_end：发送最终回复 + typing=2
 
 ### 4c: 回复拦截
-- agent_end：提取 AI 回复，调用 sendMessage 发送回微信
+- agent_end：提取**最后一个** assistant 回复，调用 sendMessage 发送回微信
 
 ### 4d: 上下文处理
 - context：追加 system prompt，标识当前微信用户
@@ -129,11 +157,10 @@ Use steer() or followUp() to queue messages, or wait for completion.
 
 ## 已知局限性
 
-- **Tool Call 场景**：当 AI 调用工具（如执行命令）时，微信端只能看到工具调用前的回复，后续的工具执行结果和最终回复不会发送
-- **多轮对话**：如果 AI 输出多个消息块，只有第一个会发送
-- **Typing 状态**：before_agent_start/turn_end 发送 typing=1/2 未实际验证
+- **Typing 状态**：发送 typing=1 后，微信端不显示"正在输入..."（待修复）
 
 ## Open Issues
 
-- [ ] Typing 状态：验证并修复 typing 状态发送
-- [ ] Tool Call 场景：支持多消息块发送（turn_end 事件中发送每个回复）
+- [ ] Typing 状态：发送 typing=1 后微信端不显示"正在输入..."，需要调查原因
+- [ ] Slash Command：/echo, /toggle-debug, /help
+- [ ] 稳定性测试：长时间运行
