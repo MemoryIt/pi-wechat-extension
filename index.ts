@@ -8,10 +8,14 @@
  * 2. Use /wechat login to scan the QR code
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "./auth/login-qr.js";
 import { saveToken, upsertAccount, getDefaultAccountToken, deleteToken, removeAccount, listAccounts } from "./storage/state.js";
 import { engine, setPi, setConfig } from "./wechat.js";
+
+// === 缓存 Git 分支（通过 footerData 获取）===
+let cachedGitBranch: string | null = null;
 
 export default function (pi: ExtensionAPI) {
   // 注入 pi 实例到 wechat engine
@@ -71,7 +75,23 @@ Connection State: ${engine.connectionState}`, "info");
   });
 
   // === session_start: 启动长轮询 ===
-  pi.on("session_start", async () => {
+  pi.on("session_start", async (_event, ctx) => {
+    // 注册 footer 回调以获取 git branch
+    ctx.ui.setFooter((tui, theme, footerData) => {
+      cachedGitBranch = footerData.getGitBranch();
+      const unsub = footerData.onBranchChange(() => {
+        cachedGitBranch = footerData.getGitBranch();
+        tui.requestRender();
+      });
+      return {
+        dispose: unsub,
+        invalidate() {},
+        render(width: number): string[] {
+          return []; // 空渲染，使用默认 footer
+        },
+      };
+    });
+
     const token = await getDefaultAccountToken();
     if (token) {
       setConfig({ baseUrl: token.baseUrl, token: token.botToken });
@@ -269,9 +289,13 @@ Connection State: ${engine.connectionState}`, "info");
 
     console.log(`[Wechat] Sending reply to user ${userId} with contextToken ${userCtx.contextToken ? 'present' : 'MISSING'}: ${replyText.slice(0, 50)}...`);
 
+    // === 追加模型元信息 ===
+    const metaInfo = buildMetaInfo(ctx);
+    const finalReply = replyText + (metaInfo ? "\n\n" + metaInfo : "");
+
     // 发送回微信（带重试）
     try {
-      await engine.sendMessageWithRetry(userId, userCtx.contextToken, replyText);
+      await engine.sendMessageWithRetry(userId, userCtx.contextToken, finalReply);
     } catch (err: any) {
       console.error(`[Wechat] Failed to send reply:`, err.message);
       ctx.ui?.notify?.(`微信回复失败: ${err.message}`, "error");
@@ -305,6 +329,55 @@ Connection State: ${engine.connectionState}`, "info");
 
     return null;
   }
+}
+
+/**
+ * 构建模型元信息字符串
+ * 格式：
+ *   /path/to/dir (branch)
+ *   0.7%/205k $0.001 (provider) model-id
+ */
+function buildMetaInfo(ctx: ExtensionContext): string {
+  const lines: string[] = [];
+
+  // 第一行：目录 + Git 分支
+  const cwd = ctx.cwd;
+  const branchStr = cachedGitBranch ? ` (${cachedGitBranch})` : "";
+  lines.push(`${cwd}${branchStr}`);
+
+  // 第二行：Token 使用、百分比、限制、ID 和供应商
+  const statsParts: string[] = [];
+
+  // Token 使用和百分比
+  const contextUsage = ctx.getContextUsage?.();
+  if (contextUsage) {
+    const { tokens, contextWindow, percent } = contextUsage;
+    const percentStr = percent !== null ? `${percent.toFixed(1)}%` : "?%";
+    const limitStr = `${(contextWindow / 1000).toFixed(0)}k`;
+    statsParts.push(`${percentStr}/${limitStr}`);
+  }
+
+  // 成本
+  let totalCost = 0;
+  for (const entry of ctx.sessionManager.getBranch()) {
+    if (entry.type === "message" && entry.message.role === "assistant") {
+      totalCost += (entry.message as AssistantMessage).usage?.cost?.total ?? 0;
+    }
+  }
+  if (totalCost > 0) {
+    statsParts.push(`$${totalCost.toFixed(3)}`);
+  }
+
+  // 模型信息
+  if (ctx.model) {
+    statsParts.push(`(${ctx.model.provider}) ${ctx.model.id}`);
+  }
+
+  if (statsParts.length > 0) {
+    lines.push(statsParts.join(" "));
+  }
+
+  return lines.join("\n");
 }
 
 async function handleLogin(ctx: ExtensionCommandContext) {

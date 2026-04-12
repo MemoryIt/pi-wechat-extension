@@ -12,6 +12,7 @@
 - **Phase 3c: 回复发送（processedRequests + before_agent_start + agent_end + sendMessageWithRetry + reset）** ✅
 - **新版方案：只发最后一条消息（解决 tool call 和多消息块问题）** ✅
 - **Typing 状态修复（message_start/message_end + keepalive）** ✅
+- **回复追加模型元信息（目录、分支、Token、百分比、成本、模型）** ✅
 
 ---
 
@@ -174,6 +175,39 @@ Use steer() or followUp() to queue messages, or wait for completion.
 - /echo：回显消息
 - /toggle-debug：切换调试模式
 - /help：帮助信息
+
+---
+
+## Feature: 回复追加模型元信息 (2026-04-12)
+
+**需求**：在每次微信回复后追加 pi 的目录和模型调用元信息
+
+**格式**：
+```
+/path/to/dir (branch)
+0.7%/205k $0.001 (provider) model-id
+```
+
+**实现方案**：
+1. 通过 `ctx.ui.setFooter()` 注册回调获取 Git 分支（缓存到 `cachedGitBranch`）
+2. `handleAgentEnd()` 中调用 `buildMetaInfo()` 构建元信息字符串
+3. 将元信息追加到回复文本末尾（用空行分隔）
+
+**获取的信息**：
+| 信息 | 获取方式 |
+|------|----------|
+| 当前目录 | `ctx.cwd` |
+| Git 分支 | `footerData.getGitBranch()` |
+| Token 百分比 | `ctx.getContextUsage().percent` |
+| Token 限制 | `ctx.getContextUsage().contextWindow` |
+| 成本 | 从 session 累加 `usage.cost.total` |
+| 模型提供商 | `ctx.model.provider` |
+| 模型 ID | `ctx.model.id` |
+
+**修改文件**：
+- index.ts: 新增 `cachedGitBranch` 变量，`session_start` 中注册 footer 回调，`handleAgentEnd()` 中追加元信息
+
+**注意**：无法获取网络流量（↓125 W）和模型选择模式（auto）信息
 
 ---
 
