@@ -75,9 +75,16 @@ Connection State: ${engine.connectionState}`, "info");
     const token = await getDefaultAccountToken();
     if (token) {
       setConfig({ baseUrl: token.baseUrl, token: token.botToken });
+      console.log(`[Wechat] session_start: loaded token for accountId=${token.accountId}, baseUrl=${token.baseUrl}`);
+
+      // 加载持久化的 context tokens
+      await engine.loadPersistedContextTokens();
+
       engine.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
         console.error("[Wechat] Polling error:", err.message);
       });
+    } else {
+      console.log(`[Wechat] session_start: no logged in account found`);
     }
   });
 
@@ -87,17 +94,25 @@ Connection State: ${engine.connectionState}`, "info");
     engine.reset();
   });
 
-  // === before_agent_start: 识别 WeChat 触发 + 发送 typing=1 ===
+  // === before_agent_start: 识别 WeChat 触发 ===
   pi.on("before_agent_start", async (event, ctx) => {
+    const now = new Date().toISOString();
+    console.log(`[Wechat] [${now}] before_agent_start: CALLED`);
+
     // 通过 prompt 正则判断是否是 WeChat 消息
     const requestIdMatch = event.prompt?.match(/__WECHAT_REQ_([a-z0-9]+)__/);
     const userMatch = event.prompt?.match(/\[WeChat; ([^\]]+)\]/);
 
     // 不是 WeChat 消息，跳过
-    if (!userMatch) return;
+    if (!userMatch) {
+      console.log(`[Wechat] [${now}] before_agent_start: not a WeChat message, skipping`);
+      return;
+    }
 
     const displayName = userMatch[1];
     const requestId = requestIdMatch?.[1] ?? null;
+
+    console.log(`[Wechat] [${now}] before_agent_start: WeChat message detected, displayName=${displayName}, requestId=${requestId}`);
 
     // 通过 displayName 查找用户上下文
     let userCtx = null;
@@ -109,17 +124,14 @@ Connection State: ${engine.connectionState}`, "info");
     }
 
     if (!userCtx) {
-      console.log(`[Wechat] UserContext not found for displayName: ${displayName}`);
+      console.error(`[Wechat] [${now}] before_agent_start: UserContext NOT FOUND for displayName=${displayName}`);
       return;
     }
 
+    console.log(`[Wechat] [${now}] before_agent_start: found userCtx, userId=${userCtx.userId}`);
+
     // 保存当前用户和 requestId（闭包变量，供 turn_end 和 agent_end 使用）
     engine.setCurrentRequest(requestId, userCtx.userId);
-
-    // 发送 typing=1 (TYPING)
-    await engine.sendTypingStatus(userCtx.userId, userCtx.contextToken, 1);
-
-    console.log(`[Wechat] before_agent_start: displayName=${displayName}, requestId=${requestId}`);
   });
 
   // === turn_end: 不再取消 typing（新版方案：只在 agent_end 完成后取消）===
@@ -128,23 +140,51 @@ Connection State: ${engine.connectionState}`, "info");
     // 空操作，不再取消 typing
   });
 
+  // === message_start: AI 开始生成消息 → 启动 typing keepalive ===
+  pi.on("message_start", async (event, ctx) => {
+    const now = new Date().toISOString();
+    const userId = engine.getCurrentUserId();
+
+    if (!userId) {
+      console.log(`[Wechat] [${now}] message_start: no current userId, skipping`);
+      return;
+    }
+
+    const userCtx = engine.getUserContexts().get(userId);
+    if (!userCtx) {
+      console.log(`[Wechat] [${now}] message_start: no userCtx for userId=${userId}, skipping`);
+      return;
+    }
+
+    console.log(`[Wechat] [${now}] message_start: starting keepalive for userId=${userId}`);
+    await engine.startTypingKeepalive(userId, userCtx.contextToken);
+  });
+
+  // === message_end: AI 消息生成结束 → 停止 typing keepalive ===
+  pi.on("message_end", async (event, ctx) => {
+    const now = new Date().toISOString();
+    const userId = engine.getCurrentUserId();
+
+    if (!userId) {
+      console.log(`[Wechat] [${now}] message_end: no current userId, skipping`);
+      return;
+    }
+
+    const userCtx = engine.getUserContexts().get(userId);
+    if (!userCtx) {
+      console.log(`[Wechat] [${now}] message_end: no userCtx for userId=${userId}, skipping`);
+      return;
+    }
+
+    console.log(`[Wechat] [${now}] message_end: stopping keepalive for userId=${userId}`);
+    await engine.stopTypingKeepalive(userId);
+  });
+
   // === agent_end: AI 回复完成后发送回微信 ===
-  // 新版方案：只发最后一条消息，发送完成后取消 typing
   // 使用 setTimeout(20) 避免 agent_end 时序问题（见 issue #2110, #2860）
   pi.on("agent_end", async (event, ctx) => {
     setTimeout(async () => {
       await handleAgentEnd(event, ctx);
-      
-      // 👇 新版：发送 typing=2 取消"正在输入"
-      // 只在微信触发的回复才取消 typing
-      const userId = engine.getCurrentUserId();
-      if (userId) {
-        const userCtx = engine.getUserContexts().get(userId);
-        if (userCtx) {
-          await engine.sendTypingStatus(userId, userCtx.contextToken, 2);
-          console.log(`[Wechat] Sent typing=2 (CANCEL) for user ${userId}`);
-        }
-      }
     }, 20);
   });
 
@@ -354,3 +394,4 @@ async function handleLogin(ctx: ExtensionCommandContext) {
     ctx.ui.notify(`登录异常: ${String(err)}`, "error");
   }
 }
+

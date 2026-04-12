@@ -1,16 +1,16 @@
 # Pi WeChat Extension - 技术规格文档
 
-> **文档版本**: v1.4 
-> **最后更新**: 2026-04-07  
+> **文档版本**: v1.5
+> **最后更新**: 2026-04-12
 > **参考**: openclaw-weixin 源码 + pi coding-agent 机制（Grok 分析）
 
 ---
 
 ## 1. 概述
 
-**项目名称**: pi-wechat-extension  
-**项目类型**: Pi Coding Agent Extension (pi package)  
-**核心功能**: 将微信接入 pi，实现"微信聊天 → AI 回复"的双向交互  
+**项目名称**: pi-wechat-extension
+**项目类型**: Pi Coding Agent Extension (pi package)
+**核心功能**: 将微信接入 pi，实现"微信聊天 → AI 回复"的双向交互
 **目标用户**: 希望在微信上与 AI 对话的用户
 
 ### 设计决策
@@ -22,6 +22,7 @@
 | AI 触发方式 | `pi.sendUserMessage(content, { deliverAs: "followUp" })` |
 | WeChat 触发识别 | 通过 prompt 正则（`__WECHAT_REQ_ + [WeChat; name]`）识别 |
 | 临时状态传递 | `wechat_meta` 隐藏消息 + 闭包变量 |
+| Typing 控制 | `message_start` → keepalive, `message_end` → 停止 |
 | 技术路线 | 复用 openclaw-weixin API/媒体模块 |
 
 ---
@@ -49,6 +50,8 @@
 │  │  │  • currentUserId: string | null                   │   │  │
 │  │  │  • currentRequestId: string | null                │   │  │
 │  │  │  • processedRequests: Map<id,timestamp> (防重复+清理) │   │  │
+│  │  │  • typingTicketCache: Map<userId, ticket> (60s TTL) │   │  │
+│  │  │  • typingKeepaliveTimers: Map<userId, Timer>      │   │  │
 │  │  └───────────────────────────────────────────────────┘   │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 │                             │                                   │
@@ -60,6 +63,7 @@
               │   • getUpdates (long-poll)    │
               │   • sendMessage               │
               │   • sendTyping                │
+              │   • getConfig (typing_ticket) │
               │   • get_bot_qrcode           │
               └───────────────────────────────┘
 ```
@@ -75,11 +79,11 @@ pi-wechat-extension/
 │   ├── types.ts
 │   └── session-guard.ts
 ├── auth/
-│   └── login.ts         # 扫码登录
+│   └── login-qr.ts       # 扫码登录
 ├── media/
 │   └── media-download.ts
 ├── storage/
-│   └── state.ts        # token、context-token、sync-buf
+│   └── state.ts          # token、context-token、sync-buf
 ├── types.ts
 └── package.json
 ```
@@ -119,12 +123,18 @@ class WechatEngine {
   // processedRequests 清理计数器
   private cleanupCounter = 0;
   
-  // UI 通知函数（从 session_start 注入）
-  private notify: (message: string, level: string) => void = () => {};
+  // === Typing 相关状态 ===
+  // typing_ticket 缓存（60秒）
+  private typingTicketCache = new Map<string, { ticket: string; expiresAt: number }>();
   
-  setNotifyFn(fn: (message: string, level: string) => void): void {
-    this.notify = fn;
-  }
+  // typing keepalive 定时器
+  private typingKeepaliveTimers = new Map<string, NodeJS.Timeout>();
+  
+  // typing keepalive 间隔（8秒）
+  private readonly TYPING_KEEPALIVE_INTERVAL_MS = 8000;
+  
+  // typing_ticket 缓存有效期（60秒）
+  private readonly TYPING_TICKET_CACHE_TTL_MS = 60000;
   
   // 停止长轮询
   stopPolling(): void {
@@ -144,6 +154,13 @@ class WechatEngine {
   
   // 清理所有状态（session_shutdown 时调用）
   reset(): void {
+    // 停止所有 typing keepalive
+    for (const [userId] of this.typingKeepaliveTimers) {
+      this.stopTypingKeepalive(userId);
+    }
+    this.typingKeepaliveTimers.clear();
+    this.typingTicketCache.clear();
+    
     this.pendingMessages.clear();
     this.processedRequests.clear();
     this.currentUserId = null;
@@ -151,7 +168,6 @@ class WechatEngine {
     this.isAiProcessing = false;
     this.cleanupCounter = 0;
     this.abortController = new AbortController(); // 重建（新 abort signal）
-  }
   }
 }
 ```
@@ -201,11 +217,11 @@ function generateRequestId(): string {
    - safelyTriggerNext() 使用 setTimeout(20) + 指数退避重试（20→30→45ms）
    - 最多重试 3 次
     ↓
-9. AI 开始生成 → before_agent_start → 发送 typing=1
+9. AI 开始生成 → message_start → 启动 typing keepalive（每 8 秒刷新）
     ↓
-10. AI 生成完成 → turn_end → 发送 typing=2
+10. AI 生成完成 → message_end → 停止 typing keepalive
     ↓
-11. agent_end 拦截 → 从 wechat_meta 查找 requestId → 提取回复 → 发送
+11. agent_end 拦截 → 从 wechat_meta 查找 requestId → 提取最后一条回复 → 发送
     ↓
 12. safelyTriggerNext(userId) 安全地处理队列中的下一条
 ```
@@ -218,22 +234,8 @@ function generateRequestId(): string {
 
 ```typescript
 pi.on("session_start", async (_event, ctx) => {
-  // 注入 UI 通知函数
-  engine.setNotifyFn((msg, level) => ctx.ui.notify(msg, level as any));
-  
   // 加载存储的 context tokens
-  const contextTokens = await storage.loadContextTokens();
-  for (const [userId, data] of Object.entries(contextTokens)) {
-    engine.userContexts.set(userId, { 
-      userId, 
-      contextToken: data.contextToken,
-      displayName: data.displayName ?? userId 
-    });
-  }
-  
-  // 加载 sync cursor
-  const cursor = await storage.loadSyncCursor();
-  engine.state.syncCursor = cursor;
+  await engine.loadPersistedContextTokens();
   
   // 启动长轮询
   engine.startPolling();
@@ -249,13 +251,13 @@ pi.on("session_shutdown", async () => {
 });
 ```
 
-### 4.3 before_agent_start：识别 WeChat 触发 + 发送 typing
+### 4.3 before_agent_start：识别 WeChat 触发
 
-**关键**：通过 prompt 正则匹配判断是否是 WeChat 消息（event.source 不可靠）
+**关键**：通过 prompt 正则匹配判断是否是 WeChat 消息，保存 requestId/userId 供后续使用
 
 ```typescript
 pi.on("before_agent_start", async (event, ctx) => {
-  // 通过 prompt 正则判断是否是 WeChat 消息（event.source 在 before_agent_start 中不可用）
+  // 通过 prompt 正则判断是否是 WeChat 消息
   const requestIdMatch = event.prompt?.match(/__WECHAT_REQ_([a-z0-9]+)__/);
   const userMatch = event.prompt?.match(/\[WeChat; ([^\]]+)\]/);
   
@@ -263,114 +265,113 @@ pi.on("before_agent_start", async (event, ctx) => {
   if (!userMatch) return;
   
   const displayName = userMatch[1];
-  const requestId = requestIdMatch?.[1];
+  const requestId = requestIdMatch?.[1] ?? null;
   
   const userCtx = findUserContextByDisplayName(displayName);
   if (!userCtx) return;
   
-  // 保存当前用户和 requestId（闭包变量，供 agent_end 使用）
-  engine.currentUserId = userCtx.userId;
-  engine.currentRequestId = requestId ?? null;
-  
-  // 发送 typing=1
-  await wechatApi.sendTyping({
-    ilink_user_id: userCtx.userId,
-    typing_ticket: userCtx.contextToken,
-    status: 1, // TYPING
-  });
-  
-  // 返回完整 system prompt（拼接原有 + 追加内容）
-  // 注意：before_agent_start 只支持 systemPrompt（完整替换），不支持 append
-  return {
-    systemPrompt: (event.systemPrompt || "") + `\n\n[系统] 当前正在回复微信用户: ${displayName}。请专注回复该用户。`
-  };
+  // 保存当前用户和 requestId（闭包变量，供 message_start/message_end/agent_end 使用）
+  engine.setCurrentRequest(requestId, userCtx.userId);
 });
 ```
 
-### 4.4 turn_end：取消 typing
+### 4.4 message_start：启动 typing keepalive
+
+**关键**：AI 开始生成消息时启动 keepalive，每 8 秒刷新一次 typing 状态
 
 ```typescript
-pi.on("turn_end", async (event, ctx) => {
-  // 只有 WeChat 触发的 turn 才发送 typing CANCEL
-  if (!engine.currentRequestId) return;
-  if (!engine.currentUserId) return;
+pi.on("message_start", async (event, ctx) => {
+  const userId = engine.getCurrentUserId();
+  if (!userId) return;
   
-  const userCtx = engine.userContexts.get(engine.currentUserId);
+  const userCtx = engine.getUserContexts().get(userId);
   if (!userCtx) return;
   
-  await wechatApi.sendTyping({
-    ilink_user_id: userCtx.userId,
-    typing_ticket: userCtx.contextToken,
-    status: 2, // CANCEL
-  });
+  // 启动 typing keepalive（每 8 秒发送 typing=1）
+  await engine.startTypingKeepalive(userId, userCtx.contextToken);
 });
 ```
 
-### 4.5 agent_end：拦截回复并发送回微信
+### 4.5 message_end：停止 typing keepalive
+
+**关键**：AI 消息生成结束时停止 keepalive
+
+```typescript
+pi.on("message_end", async (event, ctx) => {
+  const userId = engine.getCurrentUserId();
+  if (!userId) return;
+  
+  const userCtx = engine.getUserContexts().get(userId);
+  if (!userCtx) return;
+  
+  // 停止 typing keepalive
+  await engine.stopTypingKeepalive(userId);
+});
+```
+
+### 4.6 agent_end：拦截回复并发送回微信
 
 **关键**：
 1. 从 session entries 中查找 `wechat_meta` 获取 requestId（不依赖 event.source）
 2. 用 `processedRequests` Map + 定期清理防止重复处理
+3. 提取**最后一个**有内容的 assistant 消息（解决 tool call 问题）
 
 ```typescript
 pi.on("agent_end", async (event, ctx) => {
-  // 清理计数器
-  engine.cleanupCounter++;
-  
-  // 获取 requestId 和 userId：优先用闭包（最快），fallback 查 entries
-  // 注意：agent_end 没有 event.prompt，只能用闭包或 wechat_meta
-  const requestId = engine.currentRequestId;
-  let userId = engine.currentUserId;
-  
-  if (!userId && requestId) {
-    const entries = ctx.sessionManager.getBranch();
-    const wechatMeta = entries
-      .filter(e => e.type === "custom" && e.customType === "wechat_meta")
-      .reverse()
-      .find(e => e.data?.requestId === requestId);
-    userId = wechatMeta?.data?.userId ?? null;
-  }
-  
-  if (!requestId || !userId) return;
-  
-  // 防止重复处理
-  if (engine.processedRequests.has(requestId)) return;
-  engine.processedRequests.set(requestId, Date.now());
-  
-  // 定期清理旧的 processedRequests
-  if (engine.cleanupCounter >= 50) {
-    engine.cleanupProcessedRequests();
-  }
-  
-  const userCtx = engine.userContexts.get(userId);
-  if (!userCtx) return;
-  
-  // 提取 AI 回复
-  const assistantMsg = event.messages.find(m => m.role === "assistant");
-  if (!assistantMsg) return;
-  
-  const replyText = extractText(assistantMsg);
-  if (!replyText) return;
-  
-  // 发送回微信（带重试）
-  try {
-    await sendMessageWithRetry({
-      toUserId: userCtx.userId,
-      contextToken: userCtx.contextToken,
-      text: replyText,
-    });
-  } catch (err) {
-    ctx.ui.notify(`微信回复失败: ${err.message}`, "error");
-  }
-  
-  // 重置状态
-  engine.onAiDone(); // → safelyTriggerNext(userId)
+  setTimeout(async () => {
+    // 获取 requestId 和 userId：优先用闭包（最快），fallback 查 entries
+    const requestId = engine.getCurrentRequestId();
+    let userId = engine.getCurrentUserId();
+    
+    if (!userId && requestId) {
+      const entries = ctx.sessionManager.getBranch();
+      const wechatMeta = entries
+        .filter(e => e.type === "custom" && e.customType === "wechat_meta")
+        .reverse()
+        .find(e => e.data?.requestId === requestId);
+      userId = wechatMeta?.data?.userId ?? null;
+    }
+    
+    if (!requestId || !userId) return;
+    
+    // 防止重复处理
+    if (engine.processedRequests.has(requestId)) return;
+    engine.processedRequests.set(requestId, Date.now());
+    
+    const userCtx = engine.getUserContexts().get(userId);
+    if (!userCtx) return;
+    
+    // 提取 AI 回复：从后往前遍历，找到最后一个有内容的 assistant 消息
+    const assistantMessages = event.messages?.filter?.(m => m.role === "assistant") ?? [];
+    let assistantMsg = null;
+    for (let i = assistantMessages.length - 1; i >= 0; i--) {
+      const msg = assistantMessages[i];
+      const text = extractText(msg);
+      if (text) {
+        assistantMsg = msg;
+        break;
+      }
+    }
+    
+    if (!assistantMsg) return;
+    
+    const replyText = extractText(assistantMsg);
+    if (!replyText) return;
+    
+    // 发送回微信（带重试）
+    try {
+      await engine.sendMessageWithRetry(userId, userCtx.contextToken, replyText);
+    } catch (err) {
+      ctx.ui.notify(`微信回复失败: ${err.message}`, "error");
+    }
+    
+    // 处理队列中的下一条消息
+    engine.onAiDone();
+  }, 20);
 });
 ```
 
-### 4.6 context：过滤消息（可选）
-
-**关键**：context 事件不支持 systemPrompt，只能返回过滤后的 messages 数组
+### 4.7 context：过滤消息（可选）
 
 ```typescript
 pi.on("context", async (event, ctx) => {
@@ -378,18 +379,96 @@ pi.on("context", async (event, ctx) => {
   const userMatch = event.prompt?.match(/\[WeChat; ([^\]]+)\]/);
   if (!userMatch) return;
   
-  // 注意：context 只支持返回 { messages }，不支持 systemPrompt
-  // systemPrompt 在 before_agent_start 中已处理
-  // 此处可保持 messages 不变（让 LLM 看到完整上下文）
+  // 保持 messages 不变（让 LLM 看到完整上下文）
   return { messages: event.messages };
 });
 ```
 
 ---
 
-## 5. 长轮询循环
+## 5. Typing 机制
 
-### 5.1 轮询实现
+### 5.1 核心逻辑
+
+```
+message_start → startTypingKeepalive()
+                    ↓
+              发送 typing=1
+                    ↓
+              启动定时器（每 8 秒）
+                    ↓
+              定时器触发 → 发送 typing=1（刷新）
+                    ↓
+message_end → stopTypingKeepalive()
+                    ↓
+              清除定时器
+                    ↓
+              发送 typing=2（取消）
+```
+
+### 5.2 typing_ticket 获取
+
+**关键**：必须先调用 getConfig API 获取 typing_ticket，不能直接使用 context_token
+
+```typescript
+async getTypingTicket(userId: string, contextToken: string): Promise<string | null> {
+  // 检查缓存（60秒）
+  const cached = this.typingTicketCache.get(userId);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.ticket;
+  }
+  
+  // 调用 getConfig 获取新的 typing_ticket
+  const configResp = await getConfig({
+    ilinkUserId: userId,
+    contextToken: contextToken,
+  });
+  
+  if (configResp.ret === 0 && configResp.typing_ticket) {
+    // 缓存新 ticket
+    this.typingTicketCache.set(userId, {
+      ticket: configResp.typing_ticket,
+      expiresAt: Date.now() + this.TYPING_TICKET_CACHE_TTL_MS,
+    });
+    return configResp.typing_ticket;
+  }
+  
+  return null;
+}
+```
+
+### 5.3 keepalive 实现
+
+```typescript
+async startTypingKeepalive(userId: string, contextToken: string): Promise<void> {
+  // 先停止已有的 keepalive
+  await this.stopTypingKeepalive(userId);
+  
+  // 立即发送一次 typing=1
+  await this.sendTypingStatus(userId, contextToken, 1);
+  
+  // 设置定时器，每 8 秒刷新一次
+  const timer = setInterval(async () => {
+    await this.sendTypingStatus(userId, contextToken, 1);
+  }, this.TYPING_KEEPALIVE_INTERVAL_MS);
+  
+  this.typingKeepaliveTimers.set(userId, timer);
+}
+
+async stopTypingKeepalive(userId: string): Promise<void> {
+  const timer = this.typingKeepaliveTimers.get(userId);
+  if (timer) {
+    clearInterval(timer);
+    this.typingKeepaliveTimers.delete(userId);
+  }
+}
+```
+
+---
+
+## 6. 长轮询循环
+
+### 6.1 轮询实现
 
 ```typescript
 async startPolling(): Promise<void> {
@@ -413,7 +492,6 @@ async startPolling(): Promise<void> {
     } catch (error) {
       if (isSessionExpiredError(error)) {
         this.state.connectionState = "needs_relogin";
-        this.notify("微信会话已过期，请重新登录", "warning");
         return;
       }
       
@@ -434,20 +512,22 @@ async handlePollError(error: Error): Promise<void> {
 }
 ```
 
-### 5.2 关键常量
+### 6.2 关键常量
 
 ```typescript
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const BACKOFF_DELAY_MS = 30_000;
 const SESSION_EXPIRED_ERRCODE = -14;
+const TYPING_KEEPALIVE_INTERVAL_MS = 8_000;
+const TYPING_TICKET_CACHE_TTL_MS = 60_000;
 ```
 
 ---
 
-## 6. 消息队列处理
+## 7. 消息队列处理
 
-### 6.1 handleMessage
+### 7.1 handleMessage
 
 ```typescript
 async handleMessage(msg: WeixinMessage): Promise<void> {
@@ -462,14 +542,9 @@ async handleMessage(msg: WeixinMessage): Promise<void> {
       contextToken: msg.context_token,
       displayName: existing?.displayName ?? userId,
     });
-    await this.storage.saveContextToken(userId, {
-      contextToken: msg.context_token,
-      displayName: existing?.displayName ?? userId,
-    });
+    // 异步持久化
+    this.persistContextToken(userId, existing?.displayName ?? userId, msg.context_token);
   }
-  
-  // 格式化消息
-  const formatted = this.formatWechatMessage(msg, requestId);
   
   // 如果当前正在处理该用户，加入队列
   if (this.isAiProcessing && this.currentUserId === userId) {
@@ -480,28 +555,32 @@ async handleMessage(msg: WeixinMessage): Promise<void> {
   }
   
   // 触发 AI 处理
-  await this.triggerAiForUser(userId, formatted, requestId);
+  await this.triggerAiForUser(userId, msg, requestId);
 }
 ```
 
-### 6.2 triggerAiForUser
+### 7.2 triggerAiForUser
 
 ```typescript
-async triggerAiForUser(userId: string, message: string, requestId: string): Promise<void> {
+async triggerAiForUser(userId: string, msg: WeixinMessage, requestId: string): Promise<void> {
   this.currentUserId = userId;
+  this.currentRequestId = requestId;
   this.isAiProcessing = true;
+  
+  // 格式化消息
+  const formatted = this.formatWechatMessage(msg, requestId);
   
   // 写入 wechat_meta 隐藏消息
   pi.appendEntry("wechat_meta", { requestId, userId, timestamp: Date.now() });
   
   // 使用 followUp，队列处理由 safelyTriggerNext 负责
-  await pi.sendUserMessage(message, {
+  await pi.sendUserMessage(formatted, {
     deliverAs: "followUp",
   });
 }
 ```
 
-### 6.3 safelyTriggerNext
+### 7.3 safelyTriggerNext
 
 ```typescript
 private safelyTriggerNext(userId: string, retryCount = 0): void {
@@ -521,11 +600,9 @@ private safelyTriggerNext(userId: string, retryCount = 0): void {
       queue.shift(); // 成功后再移除
     } catch (err: any) {
       if (err.message?.includes("already processing") && retryCount < MAX_RETRY) {
-        console.warn(`[Wechat] Agent still busy, retry ${retryCount + 1}/${MAX_RETRY}`);
         this.safelyTriggerNext(userId, retryCount + 1);
       } else {
         queue.shift();
-        console.error(`[Wechat] Failed to process queued message: ${err.message}`);
         this.isAiProcessing = false;
         this.safelyTriggerNext(userId);
       }
@@ -534,61 +611,32 @@ private safelyTriggerNext(userId: string, retryCount = 0): void {
 }
 ```
 
-### 6.4 formatWechatMessage
-
-```typescript
-formatWechatMessage(msg: WeixinMessage, requestId: string): string {
-  const userCtx = this.userContexts.get(msg.from_user_id);
-  // 使用 ; 作为分隔符，避免 displayName 中包含 ] 导致正则失效
-  const userLabel = `[WeChat; ${userCtx?.displayName ?? msg.from_user_id}]`;
-  
-  const parts: string[] = [];
-  
-  for (const item of msg.item_list ?? []) {
-    switch (item.type) {
-      case 1: // TEXT
-        parts.push(item.text_item?.text ?? "");
-        break;
-      case 2: // IMAGE
-        parts.push(`[图片: ${item.image_item?.decryptedPath ?? "unknown"}]`);
-        break;
-      case 3: // VOICE
-        parts.push(`[语音: ${item.voice_item?.decryptedPath ?? "unknown"}]`);
-        break;
-      case 4: // FILE
-        parts.push(`[文件: ${item.file_item?.file_name ?? "unknown"}]`);
-        break;
-      case 5: // VIDEO
-        parts.push("[视频]");
-        break;
-    }
-  }
-  
-  return `__WECHAT_REQ_${requestId}__${userLabel} ${parts.join("\n")}`;
-}
-```
-
 ---
 
-## 7. sendMessage 重试机制
+## 8. sendMessage 重试机制
 
 ```typescript
-async function sendMessageWithRetry(
-  opts: { toUserId: string; contextToken: string; text: string },
+async sendMessageWithRetry(
+  toUserId: string,
+  contextToken: string,
+  text: string,
   maxRetries: number = 3
 ): Promise<void> {
-  let lastError: Error | null = null;
-  
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      await wechatApi.sendMessage({
-        to_user_id: opts.toUserId,
-        context_token: opts.contextToken,
-        item_list: [{ type: 1, text_item: { text: opts.text } }],
-      });
+      const msg: WeixinMessage = {
+        from_user_id: "",
+        to_user_id: toUserId,
+        client_id: randomUUID(),
+        message_type: 2,
+        message_state: 2,
+        context_token: contextToken,
+        item_list: [{ type: 1, text_item: { text } }],
+      };
+      
+      await sendMessage({ body: { msg } });
       return;
     } catch (err) {
-      lastError = err;
       if (attempt < maxRetries) {
         await sleep(1000 * Math.pow(2, attempt - 1)); // 1s, 2s, 4s
       }
@@ -601,9 +649,9 @@ async function sendMessageWithRetry(
 
 ---
 
-## 8. 登录流程
+## 9. 登录流程
 
-### 8.1 状态机
+### 9.1 状态机
 
 ```
 get_bot_qrcode → 显示二维码
@@ -614,66 +662,6 @@ get_qrcode_status 轮询（35s timeout）
     ├── confirmed → 保存 token，关闭二维码
     ├── expired → 刷新（最多3次）
     └── scaned_but_redirect → 切换 IDC baseUrl
-```
-
-### 8.2 QR 码显示
-
-```typescript
-async function loginWithQrCode(): Promise<WeixinAccount> {
-  const qrResp = await wechatApi.getBotQrCode();
-  
-  const result = await ctx.ui.custom<"confirmed" | "expired" | "cancelled">(
-    (tui, theme, keybindings, done) => {
-      const qr = new QrCodeDisplay(qrResp.qrcode_url, theme, {
-        onStatusChange: (status) => updateStatus(status),
-        onEscape: () => done("cancelled"),
-      });
-      return qr;
-    },
-    { overlay: true }
-  );
-  
-  // 轮询 get_qrcode_status...
-}
-```
-
----
-
-## 9. Slash Command 处理
-
-```typescript
-async function handleSlashCommand(
-  text: string,
-  msg: WeixinMessage,
-  deps: { sendTyping; sendReply }
-): Promise<{ handled: boolean }> {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("/")) return { handled: false };
-  
-  const spaceIdx = trimmed.indexOf(" ");
-  const command = (spaceIdx > 0 
-    ? trimmed.slice(1, spaceIdx) 
-    : trimmed.slice(1)
-  ).toLowerCase();
-  
-  switch (command) {
-    case "echo": {
-      const content = trimmed.slice(trimmed.indexOf(" ") + 1);
-      await deps.sendReply(content);
-      return { handled: true };
-    }
-    case "toggle-debug": {
-      // 切换 debug 模式
-      return { handled: true };
-    }
-    case "help": {
-      await deps.sendReply("可用命令: /echo <text>, /toggle-debug, /help");
-      return { handled: true };
-    }
-    default:
-      return { handled: false }; // 让 AI 处理
-  }
-}
 ```
 
 ---
@@ -697,8 +685,8 @@ async function handleSlashCommand(
 
 ```json
 {
-  "wxid_user_a": { "displayName": "张三", "contextToken": "ctx_xxx" },
-  "wxid_user_b": { "displayName": "李四", "contextToken": "ctx_yyy" }
+  "wxid_user_a": { "displayName": "张三", "contextToken": "ctx_xxx", "lastMessageAt": 1712900000000 },
+  "wxid_user_b": { "displayName": "李四", "contextToken": "ctx_yyy", "lastMessageAt": 1712901000000 }
 }
 ```
 
@@ -706,54 +694,19 @@ async function handleSlashCommand(
 
 ## 11. API 与工具
 
-### 11.1 注册的工具
-
-| 工具名 | 功能 |
-|--------|------|
-| `wechat_login` | 扫码登录 |
-| `wechat_status` | 查看连接状态 |
-| `wechat_send` | 手动发送消息 |
-| `wechat_disconnect` | 断开连接 |
-
-### 11.2 注册的命令
+### 11.1 注册的命令
 
 | 命令 | 功能 |
 |------|------|
-| `/wechat` | 查看状态 |
-| `/wechat login` | 登录 |
-| `/wechat send <user> <msg>` | 发送 |
+| `/wechat login` | 扫码登录微信 |
+| `/wechat logout` | 登出微信 |
+| `/wechat status` | 查看连接状态 |
+| `/wechat start` | 手动启动轮询 |
+| `/wechat stop` | 手动停止轮询 |
 
 ---
 
-## 12. 实现计划
-
-### Phase 1: 基础框架
-- [ ] 项目结构
-- [ ] 复制 `api/` 模块
-- [ ] 复制 `cdn/` 模块
-- [ ] 复制 `media/` 模块
-
-### Phase 2: 存储与登录
-- [ ] `storage/state.ts`
-- [ ] `auth/login.ts`
-- [ ] QR 码 TUI 组件
-
-### Phase 3: 核心引擎
-- [ ] `wechat.ts` - 长轮询
-- [ ] 事件处理（before_agent_start, turn_end, agent_end, context）
-- [ ] 消息队列
-- [ ] sendMessageWithRetry
-
-### Phase 4: slash command
-- [ ] `/echo`, `/toggle-debug`, `/help`
-
-### Phase 5: 测试
-- [ ] 单元测试
-- [ ] 集成测试
-
----
-
-## 13. 依赖
+## 12. 依赖
 
 ### 生产依赖
 ```json
@@ -766,8 +719,9 @@ async function handleSlashCommand(
 ### 开发依赖
 ```json
 {
+  "@mariozechner/pi-coding-agent": "latest",
   "typescript": "^5.8.0",
-  "vitest": "^3.1.0"
+  "vitest": "^4.1.3"
 }
 ```
 
@@ -795,10 +749,25 @@ function findUserContextByDisplayName(displayName: string): UserContext | null {
 }
 
 /**
- * 从 event.prompt 解析 requestId
+ * 从 assistant 消息中提取文本
  */
-function parseRequestId(prompt: string): string | null {
-  return prompt.match(/__WECHAT_REQ_([a-z0-9]+)__/)?.[1] ?? null;
+function extractText(assistantMsg: any): string | null {
+  if (typeof assistantMsg.content === "string") {
+    return assistantMsg.content.trim();
+  }
+  if (Array.isArray(assistantMsg.content)) {
+    const texts: string[] = [];
+    for (const block of assistantMsg.content) {
+      if (block.type === "text") {
+        texts.push(block.text ?? "");
+      }
+    }
+    return texts.join("\n").trim() || null;
+  }
+  if (assistantMsg.content?.text) {
+    return assistantMsg.content.text.trim();
+  }
+  return null;
 }
 ```
 
@@ -817,8 +786,6 @@ interface WeixinMessage {
   item_list: MessageItem[];
   context_token?: string;
 }
-
-interface UserContext {
 
 interface UserContext {
   userId: string;
@@ -848,11 +815,12 @@ type ConnectionState =
 | 事件 | 触发时机 | WeChat 处理 |
 |------|---------|------------|
 | `session_start` | 会话启动 | 加载状态，启动轮询 |
-| `session_shutdown` | 会话结束 | 停止轮询 |
-| `before_agent_start` | AI 开始前 | 识别 WeChat，发送 typing=1 |
-| `turn_end` | turn 结束 | 发送 typing=2 |
-| `agent_end` | AI 完成 | 提取回复，发送回微信 |
-| `context` | 发送给 LLM 前 | 追加 system prompt |
+| `session_shutdown` | 会话结束 | 停止轮询，清理状态 |
+| `before_agent_start` | AI 开始前 | 识别 WeChat，保存 requestId/userId |
+| `message_start` | AI 开始生成消息 | 启动 typing keepalive |
+| `message_end` | AI 消息生成结束 | 停止 typing keepalive |
+| `agent_end` | AI 完成 | 提取回复，发送回微信，处理队列 |
+| `context` | 发送给 LLM 前 | 可追加 system prompt |
 
 ---
 
@@ -860,8 +828,8 @@ type ConnectionState =
 
 1. 同一用户连续发 3 条消息（队列是否顺序处理）
 2. 两个用户几乎同时发消息（是否串话或 typing 错乱）
-3. 长会话后 compaction 是否正常
-4. TUI 手动输入消息时 WeChat 不应回复
+3. 长推理时 typing 是否持续显示（keepalive 是否工作）
+4. tool call 场景是否只发最终回复
 5. session expired (-14) 后通知 + 需要重新登录
 6. agent_end 多次触发是否防重
-7. triggerAiForUser 失败后队列是否继续
+7. 长时间推理（>30秒）typing 是否持续

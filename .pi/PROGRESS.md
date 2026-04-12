@@ -11,6 +11,7 @@
 - **Phase 3b: 消息队列（pendingMessages + isAiProcessing + triggerAi + safelyTriggerNext + setTimeout 时序修复）** ✅
 - **Phase 3c: 回复发送（processedRequests + before_agent_start + agent_end + sendMessageWithRetry + reset）** ✅
 - **新版方案：只发最后一条消息（解决 tool call 和多消息块问题）** ✅
+- **Typing 状态修复（message_start/message_end + keepalive）** ✅
 
 ---
 
@@ -58,6 +59,30 @@ Use steer() or followUp() to queue messages, or wait for completion.
 
 ---
 
+## Bug Fix: Typing 状态修复 (2026-04-12)
+
+**问题**：
+1. 直接使用 context_token 作为 typing_ticket 不正确
+2. 单次推理时间过长，typing 会提前消失
+
+**根因**：
+1. typing_ticket 和 context_token 是不同的字段，需要调用 getConfig API 获取
+2. 微信端 typing 状态会在几秒后自动消失
+
+**修复方案**：
+1. 新增 getTypingTicket() 方法：先调用 getConfig 获取 typing_ticket（带 60 秒缓存）
+2. 使用 typing_ticket 发送 typing 状态
+3. 使用 message_start/message_end 事件精确控制 typing 时机
+4. 在 message_start 到 message_end 之间，每 8 秒刷新一次 typing=1（keepalive）
+
+**修改文件**：
+- wechat.ts: 新增 getTypingTicket(), startTypingKeepalive(), stopTypingKeepalive()
+- index.ts: message_start → startTypingKeepalive, message_end → stopTypingKeepalive
+
+**验证**：微信发消息触发推理，typing 状态在整个推理期间持续显示 ✅
+
+---
+
 ## Phase 3: 核心引擎（wechat.ts）
 
 ### 3a: 消息接收 - 微信 → pi 会话 ✅
@@ -97,10 +122,8 @@ Use steer() or followUp() to queue messages, or wait for completion.
 **核心功能**：
 - currentUserId / currentRequestId 闭包变量
 - processedRequests: Map<requestId, timestamp> 防重
-- before_agent_start：解析 prompt，保存 requestId/userId，发送 typing=1 ✅
-- turn_end：空操作（新版方案） ✅
+- before_agent_start：解析 prompt，保存 requestId/userId ✅
 - agent_end：防止重复，提取**最后一个**回复，sendMessageWithRetry() 发送 ✅
-- agent_end：发送 typing=2 取消"正在输入" ✅
 - sendMessageWithRetry()：3次重试（1s, 2s, 4s） ✅
 - sendTypingStatus()：typing 状态发送 ✅
 - cleanupProcessedRequests()：清理 1 小时前请求 ✅
@@ -110,15 +133,15 @@ Use steer() or followUp() to queue messages, or wait for completion.
 **新版方案特点**：
 - 只发 AI 的最终回复（解决 tool call 中间结果问题）
 - 只取最后一个有内容的 assistant 消息
-- typing=1 保持到 agent_end，然后发送 typing=2
 
 ---
 
-### 3d: 稳定性 - 长时运行与异常处理
+### 3d: 稳定性 - 长时运行与异常处理 ✅
 **验证标准**：长时间运行稳定，异常情况正确处理
 
 **核心功能**：
-- sendTyping()：typing 状态机
+- typing_ticket 缓存（60秒）
+- typing keepalive（每8秒刷新 typing=1）
 - session expired (-14) → 通知重新登录
 - 轮询连续失败 → 指数退避重试（MAX_CONSECUTIVE_FAILURES）
 - reset()：清理所有状态，session_shutdown 时调用
@@ -130,13 +153,14 @@ Use steer() or followUp() to queue messages, or wait for completion.
 ## Phase 4: 与 pi-coding-agent 连接
 
 ### 4a: 生命周期事件
-- session_start：加载凭证，启动轮询
-- session_shutdown：停止轮询，清理状态
+- session_start：加载凭证，启动轮询 ✅
+- session_shutdown：停止轮询，清理状态 ✅
 
 ### 4b: AI 触发事件
-- before_agent_start：识别微信消息，发送 typing=1
-- turn_end：空操作（新版方案，不取消 typing）
-- agent_end：发送最终回复 + typing=2
+- before_agent_start：识别微信消息，保存 requestId/userId ✅
+- message_start：启动 typing keepalive ✅
+- message_end：停止 typing keepalive ✅
+- agent_end：发送最终回复 ✅
 
 ### 4c: 回复拦截
 - agent_end：提取**最后一个** assistant 回复，调用 sendMessage 发送回微信
@@ -153,14 +177,7 @@ Use steer() or followUp() to queue messages, or wait for completion.
 
 ---
 
-## Open Issues / TODO
-
-## 已知局限性
-
-- **Typing 状态**：发送 typing=1 后，微信端不显示"正在输入..."（待修复）
-
 ## Open Issues
 
-- [ ] Typing 状态：发送 typing=1 后微信端不显示"正在输入..."，需要调查原因
 - [ ] Slash Command：/echo, /toggle-debug, /help
 - [ ] 稳定性测试：长时间运行

@@ -21,7 +21,7 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { WeixinMessage, MessageItem } from "./api/types";
-import { getUpdates, sendMessage, sendTyping } from "./api/api";
+import { getUpdates, sendMessage, sendTyping, getConfig } from "./api/api.js";
 import { ConnectionState } from "./types.js";
 import * as storage from "./storage/state.js";
 import { randomUUID } from "node:crypto";
@@ -98,6 +98,19 @@ export class WechatEngine {
 
   // AI 处理完成回调（由 agent_end 事件调用）
   private onAiProcessingDone: (() => void) | null = null;
+
+  // === Typing 相关状态 ===
+  // typing_ticket 缓存（60秒）
+  private typingTicketCache = new Map<string, { ticket: string; expiresAt: number }>();
+
+  // typing keepalive 定时器
+  private typingKeepaliveTimers = new Map<string, NodeJS.Timeout>();
+
+  // typing keepalive 间隔（8秒）
+  private readonly TYPING_KEEPALIVE_INTERVAL_MS = 8000;
+
+  // typing_ticket 缓存有效期（60秒）
+  private readonly TYPING_TICKET_CACHE_TTL_MS = 60_000;
 
   // === getter ===
   get connectionState(): ConnectionState {
@@ -248,22 +261,130 @@ export class WechatEngine {
   }
 
   /**
+   * 获取 typing_ticket（带 60 秒缓存）
+   * @param userId 用户 ID
+   * @param contextToken 会话上下文 token
+   * @returns typing_ticket 或 null
+   */
+  async getTypingTicket(userId: string, contextToken: string): Promise<string | null> {
+    if (!wechatConfig) {
+      console.error(`[Wechat] getTypingTicket: wechatConfig is null`);
+      return null;
+    }
+
+    // 检查缓存
+    const cached = this.typingTicketCache.get(userId);
+    if (cached && Date.now() < cached.expiresAt) {
+      console.log(`[Wechat] getTypingTicket: using cached ticket for userId=${userId}`);
+      return cached.ticket;
+    }
+
+    // 缓存过期或不存在，需要重新获取
+    console.log(`[Wechat] getTypingTicket: fetching new ticket for userId=${userId}`);
+
+    try {
+      const configResp = await getConfig({
+        baseUrl: wechatConfig.baseUrl,
+        token: wechatConfig.token,
+        ilinkUserId: userId,
+        contextToken: contextToken,
+      });
+
+      if (configResp.ret === 0 && configResp.typing_ticket) {
+        // 缓存新 ticket
+        this.typingTicketCache.set(userId, {
+          ticket: configResp.typing_ticket,
+          expiresAt: Date.now() + this.TYPING_TICKET_CACHE_TTL_MS,
+        });
+        console.log(`[Wechat] getTypingTicket: got new ticket for userId=${userId}, cached for 60s`);
+        return configResp.typing_ticket;
+      } else {
+        console.error(`[Wechat] getTypingTicket: failed for userId=${userId}, ret=${configResp.ret}, errmsg=${configResp.errmsg}`);
+        return null;
+      }
+    } catch (err: any) {
+      console.error(`[Wechat] getTypingTicket: error for userId=${userId}:`, err.message);
+      return null;
+    }
+  }
+
+  /**
    * 发送 typing 状态
+   * @param userId 用户 ID
+   * @param contextToken 会话上下文 token
+   * @param status 1=TYPING, 2=CANCEL
    */
   async sendTypingStatus(userId: string, contextToken: string, status: 1 | 2): Promise<void> {
-    if (!wechatConfig) return;
+    const now = new Date().toISOString();
+
+    if (!wechatConfig) {
+      console.error(`[Wechat] [${now}] sendTypingStatus: wechatConfig is null`);
+      return;
+    }
+
+    const statusStr = status === 1 ? "TYPING" : "CANCEL";
+
+    // 获取 typing_ticket（带 60 秒缓存）
+    const ticket = await this.getTypingTicket(userId, contextToken);
+    if (!ticket) {
+      console.error(`[Wechat] [${now}] sendTypingStatus: failed to get typing_ticket for userId=${userId}`);
+      return;
+    }
+
     try {
       await sendTyping({
         baseUrl: wechatConfig.baseUrl,
         token: wechatConfig.token,
         body: {
           ilink_user_id: userId,
-          typing_ticket: contextToken,
-          status, // 1=TYPING, 2=CANCEL
+          typing_ticket: ticket,
+          status,
         },
       });
-    } catch (err) {
-      console.error(`[Wechat] sendTyping failed:`, err);
+      console.log(`[Wechat] [${now}] sendTypingStatus: ${statusStr} sent for userId=${userId}`);
+    } catch (err: any) {
+      console.error(`[Wechat] [${now}] sendTypingStatus: ${statusStr} failed:`, err.message);
+
+      // 如果失败，清除缓存，下次重试
+      if (err.message?.includes("ticket")) {
+        this.typingTicketCache.delete(userId);
+        console.log(`[Wechat] [${now}] sendTypingStatus: cleared cache for userId=${userId}`);
+      }
+    }
+  }
+
+  /**
+   * 开始 typing keepalive（每 8 秒刷新一次）
+   */
+  async startTypingKeepalive(userId: string, contextToken: string): Promise<void> {
+    // 先停止已有的 keepalive
+    await this.stopTypingKeepalive(userId);
+
+    const now = new Date().toISOString();
+    console.log(`[Wechat] [${now}] startTypingKeepalive: userId=${userId}, interval=${this.TYPING_KEEPALIVE_INTERVAL_MS}ms`);
+
+    // 立即发送一次 typing=1
+    await this.sendTypingStatus(userId, contextToken, 1);
+
+    // 设置定时器，每 8 秒刷新一次
+    const timer = setInterval(async () => {
+      const tickNow = new Date().toISOString();
+      console.log(`[Wechat] [${tickNow}] KEEPALIVE_TICK: sending typing=1 for userId=${userId}`);
+      await this.sendTypingStatus(userId, contextToken, 1);
+    }, this.TYPING_KEEPALIVE_INTERVAL_MS);
+
+    this.typingKeepaliveTimers.set(userId, timer);
+  }
+
+  /**
+   * 停止 typing keepalive
+   */
+  async stopTypingKeepalive(userId: string): Promise<void> {
+    const timer = this.typingKeepaliveTimers.get(userId);
+    if (timer) {
+      clearInterval(timer);
+      this.typingKeepaliveTimers.delete(userId);
+      console.log(`[Wechat] [${new Date().toISOString()}] stopTypingKeepalive: stopped for userId=${userId}`);
     }
   }
 
@@ -353,6 +474,13 @@ export class WechatEngine {
    * 清理所有状态（session_shutdown 时调用）
    */
   reset(): void {
+    // 停止所有 typing keepalive
+    for (const [userId] of this.typingKeepaliveTimers) {
+      this.stopTypingKeepalive(userId);
+    }
+    this.typingKeepaliveTimers.clear();
+    this.typingTicketCache.clear();
+
     this.pendingMessages.clear();
     this.processedRequests.clear();
     this.currentUserId = null;
@@ -370,6 +498,10 @@ export class WechatEngine {
     this.currentUserId = userId;
     this.currentRequestId = requestId;
     this.isAiProcessing = true;
+
+    // 检查用户上下文
+    const userCtx = this.userContexts.get(userId);
+    console.log(`[Wechat] triggerAiForUser: userId=${userId}, contextToken=${userCtx?.contextToken ? 'present' : 'MISSING'}, displayName=${userCtx?.displayName ?? 'unknown'}`);
 
     // 格式化消息
     const formatted = this.formatWechatMessage(msg, requestId);
@@ -457,12 +589,27 @@ export class WechatEngine {
 
     // 如果有 context_token，更新用户上下文
     if (msg.context_token) {
+      console.log(`[Wechat] formatWechatMessage: received context_token for user ${msg.from_user_id}: ${msg.context_token.substring(0, 30) ?? 'null'}...`);
       const existing = this.userContexts.get(msg.from_user_id ?? "");
-      this.userContexts.set(msg.from_user_id ?? "", {
+      const newCtx = {
         userId: msg.from_user_id ?? "",
         contextToken: msg.context_token,
         displayName: existing?.displayName ?? msg.from_user_id ?? "unknown",
-      });
+      };
+      this.userContexts.set(msg.from_user_id ?? "", newCtx);
+      console.log(`[Wechat] formatWechatMessage: userContext updated, contextToken=${newCtx.contextToken ? 'present' : 'MISSING'}`);
+
+      // 异步持久化 context token 到磁盘
+      this.persistContextToken(msg.from_user_id ?? "", newCtx.displayName, newCtx.contextToken);
+    } else {
+      console.log(`[Wechat] formatWechatMessage: NO context_token in message for user ${msg.from_user_id}`);
+      // 检查是否有已存储的 context token
+      const existing = this.userContexts.get(msg.from_user_id ?? "");
+      if (existing) {
+        console.log(`[Wechat] formatWechatMessage: using existing contextToken=${existing.contextToken ? 'present' : 'MISSING'} from memory`);
+      } else {
+        console.warn(`[Wechat] formatWechatMessage: no contextToken available for user ${msg.from_user_id}`);
+      }
     }
 
     for (const item of msg.item_list ?? []) {
@@ -520,6 +667,51 @@ export class WechatEngine {
       });
     }
     // TODO: /echo, /toggle-debug
+  }
+
+  /**
+   * 异步持久化 context token 到磁盘
+   */
+  private async persistContextToken(userId: string, displayName: string, contextToken: string): Promise<void> {
+    if (!this.accountId) return;
+    try {
+      await storage.saveContextToken(this.accountId, userId, {
+        displayName,
+        contextToken,
+        lastMessageAt: Date.now(),
+      });
+    } catch (err) {
+      console.error(`[Wechat] persistContextToken failed:`, err);
+    }
+  }
+
+  /**
+   * 加载持久化的 context tokens
+   */
+  async loadPersistedContextTokens(): Promise<void> {
+    if (!this.accountId) return;
+    try {
+      const tokens = await storage.loadContextTokens(this.accountId);
+      for (const [userId, entry] of Object.entries(tokens)) {
+        const existing = this.userContexts.get(userId);
+        this.userContexts.set(userId, {
+          userId,
+          contextToken: entry.contextToken,
+          displayName: entry.displayName ?? existing?.displayName ?? userId,
+        });
+        console.log(`[Wechat] Loaded contextToken for user ${userId}: ${entry.contextToken ? 'present' : 'MISSING'}`);
+      }
+      console.log(`[Wechat] Loaded ${Object.keys(tokens).length} context tokens from disk`);
+    } catch (err) {
+      console.error(`[Wechat] loadPersistedContextTokens failed:`, err);
+    }
+  }
+
+  /**
+   * 获取用户上下文
+   */
+  getUserContext(userId: string): { userId: string; contextToken: string; displayName: string } | undefined {
+    return this.userContexts.get(userId);
   }
 
   /**
