@@ -283,6 +283,15 @@ export class WechatEngine {
             },
           });
           console.log(`[Wechat] Image saved path sent to user ${userId}`);
+
+          // 把图片路径消息加入到 pi 会话历史中，让 AI 能看到
+          const formattedMsg = `[WeChat; ${userId}] ${replyText}`;
+          (pi.appendEntry as any)("message", {
+            role: "user",
+            content: formattedMsg,
+          });
+          console.log(`[Wechat] Image saved path added to session history`);
+
         } catch (err) {
           console.error(`[Wechat] Failed to send image saved path:`, err);
         }
