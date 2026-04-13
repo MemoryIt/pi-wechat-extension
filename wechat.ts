@@ -272,7 +272,11 @@ export class WechatEngine {
             token: opts.token,
             body: {
               msg: {
+                from_user_id: "",           // 必须为空，表示机器人发送
                 to_user_id: userId,
+                client_id: randomUUID(),     // 每条消息唯一
+                message_type: 2,             // BOT 消息
+                message_state: 2,            // FINISH
                 context_token: contextToken,
                 item_list: [{ type: 1, text_item: { text: replyText } }],
               },
