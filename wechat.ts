@@ -641,6 +641,16 @@ export class WechatEngine {
         return null;
       }
 
+      // 调试：打印 aeskey 详情
+      const aesKeyBase64Len = Buffer.from(aesKey, 'base64').length;
+      console.log(`[Wechat] Image download: aesKey len=${aesKey.length}, base64 decoded len=${aesKeyBase64Len}, first 40 chars=${aesKey.substring(0, 40)}`);
+      console.log(`[Wechat] Image download: img.thumb_media=${!!img.thumb_media}, img.media=${!!img.media}`);
+      if (img.thumb_media) {
+        console.log(`[Wechat] Image download: thumb_media aes_key len=${img.thumb_media.aes_key?.length ?? 0}, full_url=${img.thumb_media.full_url?.substring(0, 50)}`);
+      }
+      if (img.media) {
+        console.log(`[Wechat] Image download: media aes_key len=${img.media.aes_key?.length ?? 0}, full_url=${img.media.full_url?.substring(0, 50)}`);
+      }
       console.log(`[Wechat] Downloading image: fullUrl=${fullUrl.substring(0, 80)}...`);
 
       // 下载 + 解密（fullUrl 优先，不需要 cdnBaseUrl）
