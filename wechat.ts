@@ -20,13 +20,40 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { WeixinMessage, MessageItem } from "./api/types";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import type { WeixinMessage, MessageItem, ImageItem } from "./api/types";
 import { getUpdates, sendMessage, sendTyping, getConfig } from "./api/api.js";
 import { ConnectionState } from "./types.js";
 import * as storage from "./storage/state.js";
 import { randomUUID } from "node:crypto";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { downloadAndDecryptBuffer } from "./cdn/pic-decrypt.js";
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
+
+// === 图片存储配置 ===
+const MEDIA_STORAGE_DIR = join(getAgentDir(), "wechat", "media", "inbound");
+
+function ensureMediaDir(): void {
+  if (!existsSync(MEDIA_STORAGE_DIR)) {
+    mkdirSync(MEDIA_STORAGE_DIR, { recursive: true });
+  }
+}
+
+/**
+ * 保存图片到本地存储
+ * @param buffer 图片数据
+ * @param ext 文件扩展名
+ * @returns 保存后的文件路径
+ */
+function saveImageToStorage(buffer: Buffer, ext: string = ".jpg"): string {
+  ensureMediaDir();
+  const filename = `${Date.now()}_${randomUUID().slice(0, 8)}${ext}`;
+  const filepath = join(MEDIA_STORAGE_DIR, filename);
+  writeFileSync(filepath, buffer);
+  return filepath;
+}
 
 // 全局 pi 实例（由 setPi 注入）
 let pi: ExtensionAPI;
@@ -95,6 +122,9 @@ export class WechatEngine {
 
   // 用户上下文映射（持久化到磁盘）
   private userContexts = new Map<string, { userId: string; contextToken: string; displayName: string }>();
+
+  // 当前 API 配置（用于消息队列处理）
+  private currentOpts: { baseUrl: string; token: string } | null = null;
 
   // AI 处理完成回调（由 agent_end 事件调用）
   private onAiProcessingDone: (() => void) | null = null;
@@ -210,14 +240,14 @@ export class WechatEngine {
     }
 
     // 触发 AI 处理
-    await this.triggerAi(userId, msg, requestId);
+    await this.triggerAi(userId, msg, requestId, opts);
   }
 
   /**
    * 触发 AI 处理微信消息
    * 如果 AI 正在处理，将消息加入队列
    */
-  async triggerAi(userId: string, msg: WeixinMessage, requestId: string): Promise<void> {
+  async triggerAi(userId: string, msg: WeixinMessage, requestId: string, opts: { baseUrl: string; token: string }): Promise<void> {
     // 如果当前正在处理该用户，加入队列
     if (this.isAiProcessing && this.currentUserId === userId) {
       const queue = this.pendingMessages.get(userId) ?? [];
@@ -228,7 +258,7 @@ export class WechatEngine {
     }
 
     // 触发 AI 处理
-    await this.triggerAiForUser(userId, msg, requestId);
+    await this.triggerAiForUser(userId, msg, requestId, opts);
   }
 
   /**
@@ -494,17 +524,18 @@ export class WechatEngine {
   /**
    * 触发 AI 处理（内部方法）
    */
-  private async triggerAiForUser(userId: string, msg: WeixinMessage, requestId: string): Promise<void> {
+  private async triggerAiForUser(userId: string, msg: WeixinMessage, requestId: string, opts: { baseUrl: string; token: string }): Promise<void> {
     this.currentUserId = userId;
     this.currentRequestId = requestId;
     this.isAiProcessing = true;
+    this.currentOpts = opts; // 保存当前配置供消息队列使用
 
     // 检查用户上下文
     const userCtx = this.userContexts.get(userId);
     console.log(`[Wechat] triggerAiForUser: userId=${userId}, contextToken=${userCtx?.contextToken ? 'present' : 'MISSING'}, displayName=${userCtx?.displayName ?? 'unknown'}`);
 
-    // 格式化消息
-    const formatted = this.formatWechatMessage(msg, requestId);
+    // 格式化消息（异步，支持图片下载）
+    const formatted = await this.formatWechatMessage(msg, requestId, opts);
 
     // 写入 wechat_meta 隐藏消息（用于 agent_end 追踪）
     (pi.appendEntry as any)("wechat_meta", {
@@ -560,7 +591,16 @@ export class WechatEngine {
         const { msg, requestId } = queue[0];
         console.log(`[Wechat] Safely triggering next message for user ${userId} (retry: ${retryCount})`);
         
-        this.triggerAiForUser(userId, msg, requestId);
+        // 使用保存的 currentOpts
+        if (!this.currentOpts) {
+          console.error(`[Wechat] safelyTriggerNext: currentOpts is null, cannot process queue`);
+          queue.shift();
+          this.isAiProcessing = false;
+          this.safelyTriggerNext(userId);
+          return;
+        }
+        
+        this.triggerAiForUser(userId, msg, requestId, this.currentOpts);
         queue.shift(); // 成功发送后再移除
       } catch (err: any) {
         if (err.message?.includes("already processing") && retryCount < MAX_RETRY) {
@@ -579,10 +619,55 @@ export class WechatEngine {
   }
 
   /**
+   * 下载并解密微信图片
+   * @param img ImageItem
+   * @param baseUrl API base URL
+   * @param token Bot token
+   * @returns 保存后的本地路径，失败返回 null
+   */
+  async downloadImage(
+    img: ImageItem,
+    baseUrl: string,
+    token: string
+  ): Promise<string | null> {
+    try {
+      // 优先使用缩略图（更快），其次原图
+      const target = img.thumb_media || img.media;
+      const aesKey = img.aeskey || img.media?.aes_key;
+      const fullUrl = target?.full_url;
+
+      if (!fullUrl || !aesKey) {
+        console.warn(`[Wechat] Image download: missing URL or AES key, fullUrl=${!!fullUrl}, aesKey=${!!aesKey}`);
+        return null;
+      }
+
+      console.log(`[Wechat] Downloading image: fullUrl=${fullUrl.substring(0, 80)}...`);
+
+      // 下载 + 解密（fullUrl 优先，不需要 cdnBaseUrl）
+      const buffer = await downloadAndDecryptBuffer(
+        target.encrypt_query_param ?? "",
+        aesKey,
+        "", // 不需要 cdnBaseUrl，有 fullUrl
+        "wechat-image",
+        fullUrl
+      );
+
+      // 保存到本地
+      const savedPath = saveImageToStorage(buffer, ".jpg");
+      console.log(`[Wechat] Image saved: ${savedPath} (${buffer.length} bytes)`);
+      return savedPath;
+
+    } catch (err) {
+      console.error(`[Wechat] Image download failed:`, err);
+      return null;
+    }
+  }
+
+  /**
    * 格式化微信消息为 pi 可处理的格式
    * 格式: __WECHAT_REQ_{requestId}__[WeChat; {displayName}] {content}
    */
-  formatWechatMessage(msg: WeixinMessage, requestId: string): string {
+  async formatWechatMessage(msg: WeixinMessage, requestId: string, opts: { baseUrl: string; token: string }): Promise<string> {
     const userLabel = `[WeChat; ${msg.from_user_id ?? "unknown"}]`;
 
     const parts: string[] = [];
@@ -618,8 +703,12 @@ export class WechatEngine {
           parts.push(item.text_item?.text ?? "");
           break;
         case 2: // IMAGE
-          // @ts-ignore - decryptedPath 由媒体下载模块添加
-          parts.push(`[图片: ${item.image_item?.decryptedPath ?? "unknown"}]`);
+          const imagePath = await this.downloadImage(item.image_item!, opts.baseUrl, opts.token);
+          if (imagePath) {
+            parts.push(`[image:${imagePath}]`);
+          } else {
+            parts.push("[📷 图片下载失败]");
+          }
           break;
         case 3: // VOICE
           // @ts-ignore - decryptedPath 由媒体下载模块添加
