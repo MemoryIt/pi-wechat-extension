@@ -211,6 +211,43 @@ Use steer() or followUp() to queue messages, or wait for completion.
 
 ---
 
+## Feature: 图片消息支持 (2026-04-13)
+
+**需求**：接收微信图片消息，下载并保存，AI 可读取分析
+
+**问题与解决方案**：
+
+| 问题 | 解决方案 |
+|------|----------|
+| AES key 格式 | `image_item.aeskey` 是 32 字符 hex，需要 `Buffer.from(hex, 'hex')` 解码 |
+| appendEntry 不加入 LLM 上下文 | 使用 `pi.sendMessage` + `deliverAs: "followUp"` |
+| sendUserMessage 触发新回复 | 使用 `pi.sendMessage` 替代 |
+
+**实现功能**：
+1. **图片下载**：从 CDN 下载 + AES-128-ECB 解密
+2. **AES key 解析**：支持 32 字符 hex 格式（image_item.aeskey）
+3. **图片存储**：保存到 `~/.pi/agent/wechat/media/inbound/`
+4. **纯图片拦截**：无文本的图片消息直接返回保存路径，不触发 AI
+5. **路径共享**：使用 `pi.sendMessage` 把路径加入会话历史，AI 可看到
+
+**消息格式**：
+- 发送给微信：`图片已收到，成功保存到 /path/to/image.jpg`
+- 加入历史：`[WeChat; userId] 图片已收到，成功保存到 /path/to/image.jpg`
+
+**修改文件**：
+- wechat.ts: 
+  - 新增 `parseAesKey()` 方法（支持 hex/base64 格式）
+  - 新增 `downloadImage()` 方法
+  - 新增 `saveImageToStorage()` 函数
+  - 修改 `handleMessage()` 拦截纯图片消息
+  - 使用 `pi.sendMessage` 发送路径到历史
+
+**验证**：
+- 发送纯图片 → 收到保存路径消息 ✅
+- 追问"描述图片" → AI 能看到路径并读取分析 ✅
+
+---
+
 ## Open Issues
 
 - [ ] Slash Command：/echo, /toggle-debug, /help

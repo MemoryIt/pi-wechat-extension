@@ -1,7 +1,7 @@
 # Pi WeChat Extension - 技术规格文档
 
-> **文档版本**: v1.5
-> **最后更新**: 2026-04-12
+> **文档版本**: v1.6
+> **最后更新**: 2026-04-13
 > **参考**: openclaw-weixin 源码 + pi coding-agent 机制（Grok 分析）
 
 ---
@@ -203,27 +203,29 @@ function generateRequestId(): string {
     ↓
 3. 保存/更新 userContext（context_token）
     ↓
-4. 下载媒体 → 持久化路径
+4. **纯图片检测**：hasImage=true && hasText=false？
+    ↓ 是 → 下载图片 → 发送保存路径到微信 → pi.sendMessage 加入历史 → 跳过 AI
+5. 下载媒体（文本+图片混合格式）→ 持久化路径
     ↓
-5. 格式化消息：`__WECHAT_REQ_{id}__[WeChat; user] content`
+6. 格式化消息：`__WECHAT_REQ_{id}__[WeChat; user] content`
     ↓
-6. 写入 wechat_meta 隐藏消息：`pi.appendEntry("wechat_meta", { requestId, userId, timestamp })`
+7. 写入 wechat_meta 隐藏消息：`pi.appendEntry("wechat_meta", { requestId, userId, timestamp })`
     ↓
-7. pi.sendUserMessage(formatted, { deliverAs: "followUp" })
+8. pi.sendUserMessage(formatted, { deliverAs: "followUp" })
     ↓
-8. ⚠️ agent_end 时序问题修复（见 issue #2110, #2860）：
+9. ⚠️ agent_end 时序问题修复（见 issue #2110, #2860）：
    - agent_end 回调使用 setTimeout(20) 延迟
    - onAiDone() 调用 safelyTriggerNext()
    - safelyTriggerNext() 使用 setTimeout(20) + 指数退避重试（20→30→45ms）
    - 最多重试 3 次
     ↓
-9. AI 开始生成 → message_start → 启动 typing keepalive（每 8 秒刷新）
+10. AI 开始生成 → message_start → 启动 typing keepalive（每 8 秒刷新）
     ↓
-10. AI 生成完成 → message_end → 停止 typing keepalive
+11. AI 生成完成 → message_end → 停止 typing keepalive
     ↓
-11. agent_end 拦截 → 从 wechat_meta 查找 requestId → 提取最后一条回复 → 发送
+12. agent_end 拦截 → 从 wechat_meta 查找 requestId → 提取最后一条回复 → 发送
     ↓
-12. safelyTriggerNext(userId) 安全地处理队列中的下一条
+13. safelyTriggerNext(userId) 安全地处理队列中的下一条
 ```
 
 ---
@@ -724,6 +726,147 @@ get_qrcode_status 轮询（35s timeout）
   "vitest": "^4.1.3"
 }
 ```
+
+---
+
+## 13. 图片消息处理
+
+### 13.1 处理流程
+
+```
+收到纯图片消息（无文本）
+    ↓
+检测 hasImage=true && hasText=false
+    ↓
+下载图片（CDN + AES 解密）
+    ↓
+保存到 ~/.pi/agent/wechat/media/inbound/
+    ↓
+发送回复给微信：图片已收到，成功保存到 {路径}
+    ↓
+使用 pi.sendMessage 加入会话历史（不触发 AI）
+    ↓
+用户追问时，AI 可从历史中看到路径并读取分析
+```
+
+### 13.2 AES Key 解析
+
+**重要**：微信图片的 `aeskey` 格式与 `media.aes_key` 不同！
+
+| 字段 | 格式 | 解析方式 |
+|------|------|----------|
+| `image_item.aeskey` | 32 字符 hex 字符串 | `Buffer.from(hex, 'hex')` |
+| `image_item.media.aes_key` | base64 编码 | `Buffer.from(base64, 'base64')` |
+| `CDNMedia.aes_key` | base64 或 base64(hex) | 智能解析 |
+
+**parseAesKey 实现**：
+
+```typescript
+private parseAesKey(aesKeyInput: string): Buffer | null {
+  const trimmed = aesKeyInput.trim();
+
+  // Case 1: 直接 32 字符 hex（image_item.aeskey 最常见）
+  if (trimmed.length === 32 && /^[0-9a-fA-F]{32}$/.test(trimmed)) {
+    return Buffer.from(trimmed, "hex");
+  }
+
+  // Case 2: Base64 编码
+  try {
+    const decoded = Buffer.from(trimmed, "base64");
+    if (decoded.length === 16) return decoded;
+    // 如果是 24 字节，可能是 hex 再 base64
+    if (decoded.length === 24) {
+      const hexStr = decoded.toString("utf8").trim();
+      if (/^[0-9a-fA-F]{32}$/.test(hexStr)) {
+        return Buffer.from(hexStr, "hex");
+      }
+    }
+  } catch { /* ignore */ }
+
+  return null;
+}
+```
+
+### 13.3 图片下载
+
+```typescript
+async downloadImage(img: ImageItem, baseUrl: string, token: string): Promise<string | null> {
+  // 优先使用缩略图，其次原图
+  const target = img.thumb_media || img.media;
+  const fullUrl = target?.full_url;
+
+  // 优先使用 image_item.aeskey（hex），其次 media.aes_key（base64）
+  const aesKeyRaw = img.aeskey || img.media?.aes_key;
+
+  if (!fullUrl || !aesKeyRaw) return null;
+
+  const aesKey = this.parseAesKey(aesKeyRaw);
+  if (!aesKey) return null;
+
+  // 下载加密数据
+  const res = await fetch(fullUrl);
+  const encrypted = Buffer.from(await res.arrayBuffer());
+
+  // AES-128-ECB 解密
+  const decrypted = crypto.createDecipheriv("aes-128-ecb", aesKey, null);
+  const final = Buffer.concat([decrypted.update(encrypted), decrypted.final()]);
+
+  // 保存到本地
+  return saveImageToStorage(final, ".jpg");
+}
+```
+
+### 13.4 纯图片消息拦截
+
+```typescript
+async handleMessage(msg: WeixinMessage, opts): Promise<void> {
+  const hasText = msg.item_list?.some(item => item.type === 1 && item.text_item?.text?.trim());
+  const hasImage = msg.item_list?.some(item => item.type === 2);
+
+  if (hasImage && !hasText) {
+    // 下载图片
+    const imagePaths = [];
+    for (const item of msg.item_list ?? []) {
+      if (item.type === 2) {
+        const path = await this.downloadImage(item.image_item, opts.baseUrl, opts.token);
+        if (path) imagePaths.push(path);
+      }
+    }
+
+    // 发送回复给微信
+    const replyText = `图片已收到，成功保存到 ${imagePaths[0]}`;
+    await this.sendReplyToUser(userId, replyText, contextToken);
+
+    // 使用 pi.sendMessage 加入会话历史（不触发 AI）
+    (pi.sendMessage as any)(
+      { customType: "wechat-image-path", content: `[WeChat; ${userId}] ${replyText}` },
+      { triggerTurn: false, deliverAs: "followUp" }
+    );
+
+    return; // 不触发 AI
+  }
+
+  // 正常处理文本消息...
+}
+```
+
+### 13.5 存储路径
+
+```
+~/.pi/agent/wechat/media/inbound/
+├── 20260413_abc12345.jpg
+└── 20260413_def67890.jpg
+```
+
+**文件名格式**：`{timestamp}_{random8hex}.jpg`
+
+### 13.6 与 pi.sendMessage 的区别
+
+| API | 用途 | 是否加入 LLM 上下文 | 是否触发 AI 回复 |
+|-----|------|-------------------|-----------------|
+| `pi.sendUserMessage()` | 发送用户消息触发 AI | ✅ | ✅ |
+| `pi.sendMessage()` | 发送自定义消息 | ✅ | ❌ |
+| `pi.appendEntry()` | 发送自定义状态（custom entry） | ❌ | ❌ |
 
 ---
 
