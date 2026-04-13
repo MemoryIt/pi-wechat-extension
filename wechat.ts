@@ -284,13 +284,12 @@ export class WechatEngine {
           });
           console.log(`[Wechat] Image saved path sent to user ${userId}`);
 
-          // 把图片路径消息加入到 pi 会话历史中，让 AI 能看到
-          const formattedMsg = `[WeChat; ${userId}] ${replyText}`;
-          (pi.appendEntry as any)("message", {
-            role: "user",
-            content: formattedMsg,
+          // 使用 sendUserMessage 把图片路径加入到会话历史，让 AI 能看到
+          const textContent = `[WeChat; ${userId}] ${replyText}`;
+          (pi.sendUserMessage as any)(textContent, {
+            deliverAs: "followUp",  // 等当前 agent 空闲后再加入
           });
-          console.log(`[Wechat] Image saved path added to session history`);
+          console.log(`[Wechat] Image saved path sent to AI via sendUserMessage`);
 
         } catch (err) {
           console.error(`[Wechat] Failed to send image saved path:`, err);
