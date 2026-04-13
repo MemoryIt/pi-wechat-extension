@@ -240,6 +240,48 @@ export class WechatEngine {
       return;
     }
 
+    // === 纯图片消息拦截 ===
+    const hasText = msg.item_list?.some(item => item.type === 1 && item.text_item?.text?.trim());
+    const hasImage = msg.item_list?.some(item => item.type === 2);
+
+    if (hasImage && !hasText) {
+      console.log(`[Wechat] Pure image message detected, downloading and acknowledging...`);
+
+      // 下载图片（保留，用于后续分析）
+      for (const item of msg.item_list ?? []) {
+        if (item.type === 2 && item.image_item) {
+          const imagePath = await this.downloadImage(item.image_item, opts.baseUrl, opts.token);
+          if (imagePath) {
+            console.log(`[Wechat] Image saved: ${imagePath}`);
+          }
+        }
+      }
+
+      // 获取用户上下文用于发送回复
+      const userCtx = this.userContexts.get(userId);
+      const contextToken = userCtx?.contextToken || msg.context_token || "";
+
+      // 直接返回"已收到"
+      try {
+        await sendMessage({
+          baseUrl: opts.baseUrl,
+          token: opts.token,
+          body: {
+            msg: {
+              to_user_id: userId,
+              context_token: contextToken,
+              item_list: [{ type: 1, text_item: { text: "已收到" } }],
+            },
+          },
+        });
+        console.log(`[Wechat] Image acknowledged to user ${userId}`);
+      } catch (err) {
+        console.error(`[Wechat] Failed to send image acknowledgment:`, err);
+      }
+
+      return; // 不触发 AI
+    }
+
     // 触发 AI 处理
     await this.triggerAi(userId, msg, requestId, opts);
   }
