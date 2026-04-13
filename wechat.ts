@@ -29,6 +29,7 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { downloadAndDecryptBuffer } from "./cdn/pic-decrypt.js";
+import crypto from "node:crypto";
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 
@@ -625,6 +626,52 @@ export class WechatEngine {
    * @param token Bot token
    * @returns 保存后的本地路径，失败返回 null
    */
+  /**
+   * 解析 AES key 支持多种格式
+   * @param aesKeyInput aeskey (32 char hex) 或 aes_key (base64)
+   * @returns 16 字节 AES key
+   */
+  private parseAesKey(aesKeyInput: string): Buffer | null {
+    if (!aesKeyInput) return null;
+
+    const trimmed = aesKeyInput.trim();
+
+    // Case 1: 直接 32 字符 hex（image_item.aeskey 最常见）
+    if (trimmed.length === 32 && /^[0-9a-fA-F]{32}$/.test(trimmed)) {
+      console.log(`[Wechat] parseAesKey: using hex format`);
+      return Buffer.from(trimmed, "hex");
+    }
+
+    // Case 2: Base64 编码
+    try {
+      const decoded = Buffer.from(trimmed, "base64");
+      if (decoded.length === 16) {
+        console.log(`[Wechat] parseAesKey: using base64 raw 16 bytes`);
+        return decoded;
+      }
+      // 如果是 24 字节，可能是 hex 再 base64
+      if (decoded.length === 24) {
+        const hexStr = decoded.toString("utf8").trim();
+        if (/^[0-9a-fA-F]{32}$/.test(hexStr)) {
+          console.log(`[Wechat] parseAesKey: using base64(hex) -> hex`);
+          return Buffer.from(hexStr, "hex");
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    console.warn(`[Wechat] parseAesKey: unsupported format, len=${trimmed.length}`);
+    return null;
+  }
+
+  /**
+   * 下载并解密微信图片
+   * @param img ImageItem
+   * @param baseUrl API base URL
+   * @param token Bot token
+   * @returns 保存后的本地路径，失败返回 null
+   */
   async downloadImage(
     img: ImageItem,
     baseUrl: string,
@@ -633,38 +680,47 @@ export class WechatEngine {
     try {
       // 优先使用缩略图（更快），其次原图
       const target = img.thumb_media || img.media;
-      const aesKey = img.aeskey || img.media?.aes_key;
       const fullUrl = target?.full_url;
 
-      if (!fullUrl || !aesKey) {
-        console.warn(`[Wechat] Image download: missing URL or AES key, fullUrl=${!!fullUrl}, aesKey=${!!aesKey}`);
+      // 优先使用 image_item.aeskey（32 char hex），其次 media.aes_key（base64）
+      const aesKeyRaw = img.aeskey || img.media?.aes_key;
+
+      if (!fullUrl || !aesKeyRaw) {
+        console.warn(`[Wechat] Image download: missing URL or AES key, fullUrl=${!!fullUrl}, aesKey=${!!aesKeyRaw}`);
         return null;
       }
 
-      // 调试：打印 aeskey 详情
-      const aesKeyBase64Len = Buffer.from(aesKey, 'base64').length;
-      console.log(`[Wechat] Image download: aesKey len=${aesKey.length}, base64 decoded len=${aesKeyBase64Len}, first 40 chars=${aesKey.substring(0, 40)}`);
-      console.log(`[Wechat] Image download: img.thumb_media=${!!img.thumb_media}, img.media=${!!img.media}`);
-      if (img.thumb_media) {
-        console.log(`[Wechat] Image download: thumb_media aes_key len=${img.thumb_media.aes_key?.length ?? 0}, full_url=${img.thumb_media.full_url?.substring(0, 50)}`);
+      // 解析 AES key
+      const aesKey = this.parseAesKey(aesKeyRaw);
+      if (!aesKey) {
+        console.error(`[Wechat] Image download: failed to parse aesKey`);
+        return null;
       }
-      if (img.media) {
-        console.log(`[Wechat] Image download: media aes_key len=${img.media.aes_key?.length ?? 0}, full_url=${img.media.full_url?.substring(0, 50)}`);
-      }
+
       console.log(`[Wechat] Downloading image: fullUrl=${fullUrl.substring(0, 80)}...`);
 
-      // 下载 + 解密（fullUrl 优先，不需要 cdnBaseUrl）
-      const buffer = await downloadAndDecryptBuffer(
-        target.encrypt_query_param ?? "",
-        aesKey,
-        "", // 不需要 cdnBaseUrl，有 fullUrl
-        "wechat-image",
-        fullUrl
-      );
+      // 下载加密数据
+      let encrypted: Buffer;
+      try {
+        const res = await fetch(fullUrl);
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        }
+        encrypted = Buffer.from(await res.arrayBuffer());
+      } catch (err) {
+        console.error(`[Wechat] Image download: fetch failed:`, err);
+        return null;
+      }
+
+      console.log(`[Wechat] Image download: downloaded ${encrypted.length} bytes, decrypting...`);
+
+      // AES-128-ECB 解密
+      const decrypted = crypto.createDecipheriv("aes-128-ecb", aesKey, null);
+      const final = Buffer.concat([decrypted.update(encrypted), decrypted.final()]);
 
       // 保存到本地
-      const savedPath = saveImageToStorage(buffer, ".jpg");
-      console.log(`[Wechat] Image saved: ${savedPath} (${buffer.length} bytes)`);
+      const savedPath = saveImageToStorage(final, ".jpg");
+      console.log(`[Wechat] Image saved: ${savedPath} (${final.length} bytes)`);
       return savedPath;
 
     } catch (err) {
