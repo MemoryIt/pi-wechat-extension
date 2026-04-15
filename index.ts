@@ -7,7 +7,7 @@ import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "./auth/login-qr.js";
 import { saveToken, upsertAccount, deleteToken, removeAccount, getDefaultAccountToken } from "./storage/state.js";
 import { engine, setPi, setConfig } from "./wechat.js";
-import { getPrefix, isDebugEnabled } from "./config.js";
+import { isDebugEnabled } from "./config.js";
 
 // ============== 缓存 ==============
 
@@ -114,19 +114,13 @@ export default function (pi: ExtensionAPI) {
     engine.reset();
   });
 
-  // ============== before_agent_start（简化）==============
+  // ============== before_agent_start ==============
 
-  pi.on("before_agent_start", async (event, _ctx) => {
-    // 简单检测是否是微信消息（通过前缀）
-    const prefix = getPrefix();
-    if (!event.prompt?.includes(prefix)) {
-      return;
-    }
-
-    // 单用户模式下，直接从 engine 获取 requestId
-    const requestId = engine.getCurrentRequestId();
-    if (requestId) {
-      debugLog(`before_agent_start: WeChat message detected, requestId=${requestId}`);
+  pi.on("before_agent_start", async (_event, ctx) => {
+    // 通过 sessionManager 检测是否是微信消息
+    const wechatMeta = findWechatMetaFromSession(ctx);
+    if (wechatMeta) {
+      debugLog(`before_agent_start: WeChat message detected, requestId=${wechatMeta.requestId}`);
     }
   });
 
@@ -155,13 +149,17 @@ export default function (pi: ExtensionAPI) {
   // ============== agent_end 处理函数 ==============
 
   async function handleAgentEnd(event: unknown, ctx: ExtensionContext) {
-    const requestId = engine.getCurrentRequestId();
+    // 从 sessionManager 获取 wechat_meta
+    const eventObj = event as { messages?: unknown[] };
+    const wechatMeta = findWechatMetaFromSession(ctx);
 
-    if (!requestId) {
-      // 不是微信触发的消息
+    if (!wechatMeta) {
+      // 终端消息，不发送微信
       engine.onAiDone();
       return;
     }
+
+    const requestId = wechatMeta.requestId;
 
     // 防重检查
     if (engine.isRequestProcessed(requestId)) {
@@ -171,12 +169,11 @@ export default function (pi: ExtensionAPI) {
     engine.markRequestProcessed(requestId);
 
     // 提取 AI 回复（最后一条有内容的 assistant 消息）
-    const eventObj = event as { messages?: unknown[] };
     const assistantMessages = eventObj.messages?.filter?.((m: unknown) => {
       const msg = m as { role?: string };
       return msg.role === "assistant";
     }) ?? [];
-    
+
     let replyText: string | null = null;
     for (let i = assistantMessages.length - 1; i >= 0; i--) {
       replyText = extractReplyText(assistantMessages[i]);
@@ -208,6 +205,21 @@ export default function (pi: ExtensionAPI) {
   }
 
   // ============== 辅助函数 ==============
+
+  /**
+   * 从 sessionManager 中查找 wechat_meta
+   */
+  function findWechatMetaFromSession(ctx: ExtensionContext): { requestId: string } | null {
+    const entries = ctx.sessionManager.getBranch();
+    // 从后往前找最新的 wechat_meta
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i] as { type?: string; customType?: string; data?: unknown };
+      if (entry.type === "custom" && entry.customType === "wechat_meta") {
+        return entry.data as { requestId: string };
+      }
+    }
+    return null;
+  }
 
   function extractReplyText(assistantMsg: unknown): string | null {
     const msg = assistantMsg as { content?: unknown };
