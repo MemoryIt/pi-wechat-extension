@@ -300,3 +300,67 @@ export async function getDefaultAccountToken(): Promise<WechatToken | null> {
   accounts.sort((a, b) => b.loginAt - a.loginAt);
   return await loadToken(accounts[0].accountId);
 }
+
+// ============== 单用户便捷函数 ==============
+
+/**
+ * 获取单用户的凭证信息
+ * 单用户模式下，直接返回存储的唯一凭证
+ * 
+ * @returns 单用户凭证，包含 botToken, accountId, userId, baseUrl
+ */
+export async function getSingleUserCredentials(): Promise<{
+  botToken: string;
+  accountId: string;
+  userId: string;
+  baseUrl: string;
+} | null> {
+  const token = await getDefaultAccountToken();
+  if (!token) {
+    return null;
+  }
+  return {
+    botToken: token.botToken,
+    accountId: token.accountId,
+    userId: token.userId,
+    baseUrl: token.baseUrl,
+  };
+}
+
+/**
+ * 获取单用户的 contextToken
+ * 从 context-tokens.json 中读取第一个用户的 token
+ * 
+ * @returns contextToken 或 null
+ */
+export async function getSingleUserContextToken(): Promise<string | null> {
+  const accounts = await listAccounts();
+  if (accounts.length === 0) {
+    return null;
+  }
+  
+  // 取最近登录的账号
+  accounts.sort((a, b) => b.loginAt - a.loginAt);
+  const accountId = accounts[0].accountId;
+  
+  const tokens = await loadContextTokens(accountId);
+  const userIds = Object.keys(tokens);
+  
+  if (userIds.length === 0) {
+    return null;
+  }
+  
+  // 返回第一个（也是唯一的）用户的 contextToken
+  return tokens[userIds[0]].contextToken;
+}
+
+/**
+ * 获取单用户的 userId
+ * 从 token.json 中读取
+ * 
+ * @returns userId 或 null
+ */
+export async function getSingleUserId(): Promise<string | null> {
+  const token = await getDefaultAccountToken();
+  return token?.userId ?? null;
+}
