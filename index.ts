@@ -7,11 +7,19 @@ import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "./auth/login-qr.js";
 import { saveToken, upsertAccount, deleteToken, removeAccount, getDefaultAccountToken } from "./storage/state.js";
 import { engine, setPi, setConfig } from "./wechat.js";
-import { getPrefix } from "./config.js";
+import { getPrefix, isDebugEnabled } from "./config.js";
 
 // ============== 缓存 ==============
 
 let cachedGitBranch: string | null = null;
+
+// ============== 调试日志辅助函数 ==============
+
+function debugLog(message: string, ...args: unknown[]): void {
+  if (isDebugEnabled()) {
+    console.log(`[Wechat] ${message}`, ...args);
+  }
+}
 
 export default function (pi: ExtensionAPI) {
   setPi(pi);
@@ -88,14 +96,14 @@ export default function (pi: ExtensionAPI) {
     const token = await getDefaultAccountToken();
     if (token) {
       setConfig({ baseUrl: token.baseUrl, token: token.botToken });
-      console.log(`[Wechat] session_start: loaded token for userId=${token.userId}`);
+      debugLog(`session_start: loaded token for userId=${token.userId}`);
 
       // 启动轮询
       engine.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
         console.error("[Wechat] Polling error:", err.message);
       });
     } else {
-      console.log(`[Wechat] session_start: no logged in account found`);
+      debugLog(`session_start: no logged in account found`);
     }
   });
 
@@ -118,21 +126,21 @@ export default function (pi: ExtensionAPI) {
     // 单用户模式下，直接从 engine 获取 requestId
     const requestId = engine.getCurrentRequestId();
     if (requestId) {
-      console.log(`[Wechat] before_agent_start: WeChat message detected, requestId=${requestId}`);
+      debugLog(`before_agent_start: WeChat message detected, requestId=${requestId}`);
     }
   });
 
   // ============== message_start ==============
 
   pi.on("message_start", async (_event, _ctx) => {
-    console.log(`[Wechat] message_start: starting typing keepalive`);
+    debugLog(`message_start: starting typing keepalive`);
     await engine.startTypingKeepalive();
   });
 
   // ============== message_end ==============
 
   pi.on("message_end", async (_event, _ctx) => {
-    console.log(`[Wechat] message_end: stopping typing keepalive`);
+    debugLog(`message_end: stopping typing keepalive`);
     await engine.stopTypingKeepalive();
   });
 
@@ -157,7 +165,7 @@ export default function (pi: ExtensionAPI) {
 
     // 防重检查
     if (engine.isRequestProcessed(requestId)) {
-      console.log(`[Wechat] Request ${requestId} already processed, skipping`);
+      debugLog(`Request ${requestId} already processed, skipping`);
       return;
     }
     engine.markRequestProcessed(requestId);
@@ -176,12 +184,12 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (!replyText) {
-      console.log(`[Wechat] No reply text found`);
+      debugLog(`No reply text found`);
       engine.onAiDone();
       return;
     }
 
-    console.log(`[Wechat] Sending reply: ${replyText.slice(0, 50)}...`);
+    debugLog(`Sending reply: ${replyText.slice(0, 50)}...`);
 
     // 追加模型元信息
     const metaInfo = buildMetaInfo(ctx);

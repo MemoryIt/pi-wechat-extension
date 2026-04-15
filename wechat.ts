@@ -18,9 +18,17 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import crypto from "node:crypto";
-import { getPrefix } from "./config.js";
+import { getPrefix, isDebugEnabled } from "./config.js";
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
+
+// ============== 调试日志辅助函数 ==============
+
+function debugLog(message: string, ...args: unknown[]): void {
+  if (isDebugEnabled()) {
+    console.log(`[Wechat] ${message}`, ...args);
+  }
+}
 
 // ============== 图片存储配置 ==============
 
@@ -123,7 +131,7 @@ export class WechatEngine {
       console.warn("[Wechat] No context token found, replies may fail");
     }
 
-    console.log(`[Wechat] Single user initialized: userId=${this.singleUserId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
+    debugLog(`Single user initialized: userId=${this.singleUserId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
     return true;
   }
 
@@ -209,7 +217,7 @@ export class WechatEngine {
 
     // 更新 contextToken（如果消息中有）
     if (msg.context_token && msg.context_token !== this.singleContextToken) {
-      console.log(`[Wechat] Updating contextToken from message`);
+      debugLog(`Updating contextToken from message`);
       this.singleContextToken = msg.context_token;
       // 持久化
       if (this.accountId && this.singleUserId) {
@@ -226,7 +234,7 @@ export class WechatEngine {
     const hasImage = msg.item_list?.some(item => item.type === 2);
 
     if (hasImage && !hasText) {
-      console.log(`[Wechat] Pure image message detected`);
+      debugLog(`Pure image message detected`);
       
       const imagePaths: string[] = [];
       for (const item of msg.item_list ?? []) {
@@ -264,7 +272,7 @@ export class WechatEngine {
     if (this.isAiProcessing) {
       // 加入队列
       this.pendingMessages.push({ msg, requestId });
-      console.log(`[Wechat] AI is processing, queued message (queue size: ${this.pendingMessages.length})`);
+      debugLog(`AI is processing, queued message (queue size: ${this.pendingMessages.length})`);
       return;
     }
 
@@ -278,7 +286,7 @@ export class WechatEngine {
     this.currentRequestId = requestId;
     this.isAiProcessing = true;
 
-    console.log(`[Wechat] triggerAi: requestId=${requestId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
+    debugLog(`triggerAi: requestId=${requestId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
 
     // 格式化消息：简化为 {prefix} {content}
     const formatted = await this.formatMessage(msg, opts);
@@ -376,7 +384,7 @@ export class WechatEngine {
 
       try {
         const { msg, requestId } = this.pendingMessages.shift()!;
-        console.log(`[Wechat] Triggering next message (retry: ${retryCount})`);
+        debugLog(`Triggering next message (retry: ${retryCount})`);
         const opts = this.getCurrentOpts();
         if (opts) {
           this.triggerAiInternal(msg, requestId, opts);
@@ -475,7 +483,7 @@ export class WechatEngine {
   async startTypingKeepalive(): Promise<void> {
     await this.stopTypingKeepalive();
 
-    console.log(`[Wechat] startTypingKeepalive: interval=${this.TYPING_KEEPALIVE_INTERVAL_MS}ms`);
+    debugLog(`startTypingKeepalive: interval=${this.TYPING_KEEPALIVE_INTERVAL_MS}ms`);
     await this.sendTypingStatus(1);
 
     const timer = setInterval(async () => {
@@ -591,7 +599,7 @@ export class WechatEngine {
     this.cleanupCounter = 0;
     this.abortController = new AbortController();
     
-    console.log("[Wechat] Engine state reset");
+    debugLog("Engine state reset");
   }
 
   // ============== 图片下载 ==============
