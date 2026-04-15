@@ -1,27 +1,23 @@
 /**
- * pi-wechat-extension
- * 
- * WeChat integration for pi coding agent
- * 
- * Usage:
- * 1. Copy this file to ~/.pi/agent/extensions/ or your project's .pi/extensions/
- * 2. Use /wechat login to scan the QR code
+ * index.ts - 微信插件入口（单用户版本）
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "./auth/login-qr.js";
-import { saveToken, upsertAccount, getDefaultAccountToken, deleteToken, removeAccount, listAccounts } from "./storage/state.js";
+import { saveToken, upsertAccount, deleteToken, removeAccount, getDefaultAccountToken } from "./storage/state.js";
 import { engine, setPi, setConfig } from "./wechat.js";
+import { getPrefix } from "./config.js";
 
-// === 缓存 Git 分支（通过 footerData 获取）===
+// ============== 缓存 ==============
+
 let cachedGitBranch: string | null = null;
 
 export default function (pi: ExtensionAPI) {
-  // 注入 pi 实例到 wechat engine
   setPi(pi);
 
-  // 注册 wechat login command
+  // ============== 注册命令 ==============
+
   pi.registerCommand("wechat", {
     description: "WeChat integration",
     getArgumentCompletions: (prefix) => {
@@ -31,19 +27,17 @@ export default function (pi: ExtensionAPI) {
     },
     handler: async (args, ctx) => {
       const subcommand = args.trim().toLowerCase();
-      
+
       if (subcommand === "login") {
         await handleLogin(ctx);
       } else if (subcommand === "status") {
         const token = await getDefaultAccountToken();
         if (token) {
-          ctx.ui.notify(`WeChat: Logged in (${token.accountId})
-Connection State: ${engine.connectionState}`, "info");
+          ctx.ui.notify(`WeChat: Logged in\nUser ID: ${token.userId}\nConnection: ${engine.connectionState}`, "info");
         } else {
           ctx.ui.notify("WeChat: Not logged in", "info");
         }
       } else if (subcommand === "start") {
-        // 手动启动轮询（用于测试）
         const token = await getDefaultAccountToken();
         if (!token) {
           ctx.ui.notify("WeChat: Not logged in. Use /wechat login first.", "error");
@@ -57,9 +51,7 @@ Connection State: ${engine.connectionState}`, "info");
         engine.stopPolling();
         ctx.ui.notify("WeChat: Stopped polling", "info");
       } else if (subcommand === "logout") {
-        // 停止轮询
         engine.stopPolling();
-        // 获取当前账号并删除
         const token = await getDefaultAccountToken();
         if (token) {
           await deleteToken(token.accountId);
@@ -69,14 +61,15 @@ Connection State: ${engine.connectionState}`, "info");
           ctx.ui.notify("WeChat: Not logged in", "info");
         }
       } else {
-        ctx.ui.notify("Usage: /wechat login | status | start | stop", "info");
+        ctx.ui.notify("Usage: /wechat login | status | start | stop | logout", "info");
       }
     },
   });
 
-  // === session_start: 启动长轮询 ===
+  // ============== session_start ==============
+
   pi.on("session_start", async (_event, ctx) => {
-    // 注册 footer 回调以获取 git branch
+    // 注册 footer 回调
     ctx.ui.setFooter((tui, theme, footerData) => {
       cachedGitBranch = footerData.getGitBranch();
       const unsub = footerData.onBranchChange(() => {
@@ -86,8 +79,8 @@ Connection State: ${engine.connectionState}`, "info");
       return {
         dispose: unsub,
         invalidate() {},
-        render(width: number): string[] {
-          return []; // 空渲染，使用默认 footer
+        render(_width: number): string[] {
+          return [];
         },
       };
     });
@@ -95,11 +88,9 @@ Connection State: ${engine.connectionState}`, "info");
     const token = await getDefaultAccountToken();
     if (token) {
       setConfig({ baseUrl: token.baseUrl, token: token.botToken });
-      console.log(`[Wechat] session_start: loaded token for accountId=${token.accountId}, baseUrl=${token.baseUrl}`);
+      console.log(`[Wechat] session_start: loaded token for userId=${token.userId}`);
 
-      // 加载持久化的 context tokens
-      await engine.loadPersistedContextTokens();
-
+      // 启动轮询
       engine.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
         console.error("[Wechat] Polling error:", err.message);
       });
@@ -108,363 +99,249 @@ Connection State: ${engine.connectionState}`, "info");
     }
   });
 
-  // === session_shutdown: 停止轮询 ===
+  // ============== session_shutdown ==============
+
   pi.on("session_shutdown", async () => {
     engine.stopPolling();
     engine.reset();
   });
 
-  // === before_agent_start: 识别 WeChat 触发 ===
-  pi.on("before_agent_start", async (event, ctx) => {
-    const now = new Date().toISOString();
-    console.log(`[Wechat] [${now}] before_agent_start: CALLED`);
+  // ============== before_agent_start（简化）==============
 
-    // 通过 prompt 正则判断是否是 WeChat 消息
-    const requestIdMatch = event.prompt?.match(/__WECHAT_REQ_([a-z0-9]+)__/);
-    const userMatch = event.prompt?.match(/\[WeChat; ([^\]]+)\]/);
-
-    // 不是 WeChat 消息，跳过
-    if (!userMatch) {
-      console.log(`[Wechat] [${now}] before_agent_start: not a WeChat message, skipping`);
+  pi.on("before_agent_start", async (event, _ctx) => {
+    // 简单检测是否是微信消息（通过前缀）
+    const prefix = getPrefix();
+    if (!event.prompt?.includes(prefix)) {
       return;
     }
 
-    const displayName = userMatch[1];
-    const requestId = requestIdMatch?.[1] ?? null;
-
-    console.log(`[Wechat] [${now}] before_agent_start: WeChat message detected, displayName=${displayName}, requestId=${requestId}`);
-
-    // 通过 displayName 查找用户上下文
-    let userCtx = null;
-    for (const ctx of engine.getUserContexts().values()) {
-      if (ctx.displayName === displayName || ctx.userId === displayName) {
-        userCtx = ctx;
-        break;
-      }
+    // 单用户模式下，直接从 engine 获取 requestId
+    const requestId = engine.getCurrentRequestId();
+    if (requestId) {
+      console.log(`[Wechat] before_agent_start: WeChat message detected, requestId=${requestId}`);
     }
-
-    if (!userCtx) {
-      console.error(`[Wechat] [${now}] before_agent_start: UserContext NOT FOUND for displayName=${displayName}`);
-      return;
-    }
-
-    console.log(`[Wechat] [${now}] before_agent_start: found userCtx, userId=${userCtx.userId}`);
-
-    // 保存当前用户和 requestId（闭包变量，供 turn_end 和 agent_end 使用）
-    engine.setCurrentRequest(requestId, userCtx.userId);
   });
 
-  // === turn_end: 不再取消 typing（新版方案：只在 agent_end 完成后取消）===
-  // 新方案：只发最后一条消息，typing=1 保持到 agent_end
-  pi.on("turn_end", async (event, ctx) => {
-    // 空操作，不再取消 typing
+  // ============== message_start ==============
+
+  pi.on("message_start", async (_event, _ctx) => {
+    console.log(`[Wechat] message_start: starting typing keepalive`);
+    await engine.startTypingKeepalive();
   });
 
-  // === message_start: AI 开始生成消息 → 启动 typing keepalive ===
-  pi.on("message_start", async (event, ctx) => {
-    const now = new Date().toISOString();
-    const userId = engine.getCurrentUserId();
+  // ============== message_end ==============
 
-    if (!userId) {
-      console.log(`[Wechat] [${now}] message_start: no current userId, skipping`);
-      return;
-    }
-
-    const userCtx = engine.getUserContexts().get(userId);
-    if (!userCtx) {
-      console.log(`[Wechat] [${now}] message_start: no userCtx for userId=${userId}, skipping`);
-      return;
-    }
-
-    console.log(`[Wechat] [${now}] message_start: starting keepalive for userId=${userId}`);
-    await engine.startTypingKeepalive(userId, userCtx.contextToken);
+  pi.on("message_end", async (_event, _ctx) => {
+    console.log(`[Wechat] message_end: stopping typing keepalive`);
+    await engine.stopTypingKeepalive();
   });
 
-  // === message_end: AI 消息生成结束 → 停止 typing keepalive ===
-  pi.on("message_end", async (event, ctx) => {
-    const now = new Date().toISOString();
-    const userId = engine.getCurrentUserId();
+  // ============== agent_end ==============
 
-    if (!userId) {
-      console.log(`[Wechat] [${now}] message_end: no current userId, skipping`);
-      return;
-    }
-
-    const userCtx = engine.getUserContexts().get(userId);
-    if (!userCtx) {
-      console.log(`[Wechat] [${now}] message_end: no userCtx for userId=${userId}, skipping`);
-      return;
-    }
-
-    console.log(`[Wechat] [${now}] message_end: stopping keepalive for userId=${userId}`);
-    await engine.stopTypingKeepalive(userId);
-  });
-
-  // === agent_end: AI 回复完成后发送回微信 ===
-  // 使用 setTimeout(20) 避免 agent_end 时序问题（见 issue #2110, #2860）
   pi.on("agent_end", async (event, ctx) => {
     setTimeout(async () => {
       await handleAgentEnd(event, ctx);
     }, 20);
   });
 
-  // === agent_end 处理函数 ===
-  async function handleAgentEnd(event: any, ctx: any) {
-    // 获取 requestId 和 userId：优先用闭包
+  // ============== agent_end 处理函数 ==============
+
+  async function handleAgentEnd(event: unknown, ctx: ExtensionContext) {
     const requestId = engine.getCurrentRequestId();
-    let userId = engine.getCurrentUserId();
 
-    if (!requestId || !userId) {
-      // 尝试从 session entries 中查找
-      try {
-        const entries = ctx.sessionManager?.getBranch?.() ?? [];
-        const wechatMeta = entries
-          .filter((e: any) => e.type === "custom" && e.customType === "wechat_meta")
-          .reverse()
-          .find((e: any) => e.data?.requestId === requestId);
-        userId = wechatMeta?.data?.userId ?? null;
-      } catch (e) {
-        // ignore
-      }
-    }
-
-    if (!requestId || !userId) {
-      // 不是微信触发的 AI 回复，直接处理队列
+    if (!requestId) {
+      // 不是微信触发的消息
       engine.onAiDone();
       return;
     }
 
-    // 防止重复处理
+    // 防重检查
     if (engine.isRequestProcessed(requestId)) {
       console.log(`[Wechat] Request ${requestId} already processed, skipping`);
       return;
     }
     engine.markRequestProcessed(requestId);
 
-    // 获取用户上下文
-    const userCtx = engine.getUserContexts().get(userId ?? "");
+    // 提取 AI 回复（最后一条有内容的 assistant 消息）
+    const eventObj = event as { messages?: unknown[] };
+    const assistantMessages = eventObj.messages?.filter?.((m: unknown) => {
+      const msg = m as { role?: string };
+      return msg.role === "assistant";
+    }) ?? [];
     
-    // 详细日志帮助诊断
-    console.log(`[Wechat] handleAgentEnd: requestId=${requestId}, userId=${userId}`);
-    console.log(`[Wechat] userContexts keys: ${JSON.stringify(Array.from(engine.getUserContexts().keys()))}`);
-    console.log(`[Wechat] userCtx: ${JSON.stringify(userCtx)}`);
-    
-    if (!userCtx) {
-      console.error(`[Wechat] UserContext not found for userId: ${userId}`);
-      console.error(`[Wechat] This means we don't have a contextToken for this user.`);
-      console.error(`[Wechat] The message may have arrived without a context_token.`);
-      console.error(`[Wechat] Skipping send and processing queue anyway.`);
-      engine.onAiDone();
-      return;
-    }
-
-    // 提取 AI 回复：取最后一个有内容的 assistant 消息（支持 tool call 场景）
-    const assistantMessages = event.messages?.filter?.((m: any) => m.role === "assistant") ?? [];
-    console.log(`[Wechat] Found ${assistantMessages.length} assistant message(s) in event.messages`);
-    
-    // 找到最后一个有内容的 assistant 消息
-    let assistantMsg = null;
+    let replyText: string | null = null;
     for (let i = assistantMessages.length - 1; i >= 0; i--) {
-      const msg = assistantMessages[i];
-      const text = extractReplyText(msg);
-      if (text) {
-        assistantMsg = msg;
-        break;
-      }
-    }
-    
-    if (!assistantMsg) {
-      console.log(`[Wechat] No assistant message with content found`);
-      engine.onAiDone();
-      return;
+      replyText = extractReplyText(assistantMessages[i]);
+      if (replyText) break;
     }
 
-    // 提取回复文本
-    const replyText = extractReplyText(assistantMsg);
     if (!replyText) {
-      console.log(`[Wechat] No reply text extracted`);
+      console.log(`[Wechat] No reply text found`);
       engine.onAiDone();
       return;
     }
 
-    console.log(`[Wechat] Sending reply to user ${userId} with contextToken ${userCtx.contextToken ? 'present' : 'MISSING'}: ${replyText.slice(0, 50)}...`);
+    console.log(`[Wechat] Sending reply: ${replyText.slice(0, 50)}...`);
 
-    // === 追加模型元信息 ===
+    // 追加模型元信息
     const metaInfo = buildMetaInfo(ctx);
     const finalReply = replyText + (metaInfo ? "\n\n" + metaInfo : "");
 
-    // 发送回微信（带重试）
+    // 发送回复
     try {
-      await engine.sendMessageWithRetry(userId, userCtx.contextToken, finalReply);
-    } catch (err: any) {
-      console.error(`[Wechat] Failed to send reply:`, err.message);
-      ctx.ui?.notify?.(`微信回复失败: ${err.message}`, "error");
+      await engine.sendMessageWithRetry(finalReply);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[Wechat] Failed to send reply:`, errMsg);
+      ctx.ui?.notify?.(`微信回复失败: ${errMsg}`, "error");
     }
 
-    // 处理队列中的下一条消息
     engine.onAiDone();
   }
 
-  // === 辅助函数：从 assistant 消息中提取回复文本 ===
-  function extractReplyText(assistantMsg: any): string | null {
-    // 支持多种格式
-    if (typeof assistantMsg.content === "string") {
-      return assistantMsg.content.trim();
-    }
+  // ============== 辅助函数 ==============
 
-    if (Array.isArray(assistantMsg.content)) {
-      // content 是数组，取所有文本部分
+  function extractReplyText(assistantMsg: unknown): string | null {
+    const msg = assistantMsg as { content?: unknown };
+    
+    if (typeof msg.content === "string") {
+      return msg.content.trim();
+    }
+    if (Array.isArray(msg.content)) {
       const texts: string[] = [];
-      for (const block of assistantMsg.content) {
-        if (block.type === "text") {
-          texts.push(block.text ?? "");
+      for (const block of msg.content) {
+        const blockObj = block as { type?: string; text?: string };
+        if (blockObj.type === "text") {
+          texts.push(blockObj.text ?? "");
         }
       }
       return texts.join("\n").trim() || null;
     }
-
-    if (assistantMsg.content?.text) {
-      return assistantMsg.content.text.trim();
+    if (typeof msg.content === "object" && msg.content !== null) {
+      const contentObj = msg.content as { text?: string };
+      if (contentObj.text) {
+        return contentObj.text.trim();
+      }
     }
-
     return null;
   }
-}
 
-/**
- * 构建模型元信息字符串
- * 格式：
- *   /path/to/dir (branch)
- *   0.7%/205k $0.001 (provider) model-id
- */
-function buildMetaInfo(ctx: ExtensionContext): string {
-  const lines: string[] = [];
+  function buildMetaInfo(ctx: ExtensionContext): string {
+    const lines: string[] = [];
+    const cwd = ctx.cwd;
+    const branchStr = cachedGitBranch ? ` (${cachedGitBranch})` : "";
+    lines.push(`${cwd}${branchStr}`);
 
-  // 第一行：目录 + Git 分支
-  const cwd = ctx.cwd;
-  const branchStr = cachedGitBranch ? ` (${cachedGitBranch})` : "";
-  lines.push(`${cwd}${branchStr}`);
+    const statsParts: string[] = [];
 
-  // 第二行：Token 使用、百分比、限制、ID 和供应商
-  const statsParts: string[] = [];
-
-  // Token 使用和百分比
-  const contextUsage = ctx.getContextUsage?.();
-  if (contextUsage) {
-    const { tokens, contextWindow, percent } = contextUsage;
-    const percentStr = percent !== null ? `${percent.toFixed(1)}%` : "?%";
-    const limitStr = `${(contextWindow / 1000).toFixed(0)}k`;
-    statsParts.push(`${percentStr}/${limitStr}`);
-  }
-
-  // 成本
-  let totalCost = 0;
-  for (const entry of ctx.sessionManager.getBranch()) {
-    if (entry.type === "message" && entry.message.role === "assistant") {
-      totalCost += (entry.message as AssistantMessage).usage?.cost?.total ?? 0;
-    }
-  }
-  if (totalCost > 0) {
-    statsParts.push(`$${totalCost.toFixed(3)}`);
-  }
-
-  // 模型信息
-  if (ctx.model) {
-    statsParts.push(`(${ctx.model.provider}) ${ctx.model.id}`);
-  }
-
-  if (statsParts.length > 0) {
-    lines.push(statsParts.join(" "));
-  }
-
-  return lines.join("\n");
-}
-
-async function handleLogin(ctx: ExtensionCommandContext) {
-  try {
-    // Step 1: Get QR code
-    const startResult = await startWeixinLoginWithQr({
-      apiBaseUrl: "https://ilinkai.weixin.qq.com",
-      botType: DEFAULT_ILINK_BOT_TYPE,
-      verbose: true,
-    });
-
-    if (!startResult.qrcodeUrl) {
-      ctx.ui.notify(`Failed to get QR code: ${startResult.message}`, "error");
-      return;
+    const contextUsage = ctx.getContextUsage?.();
+    if (contextUsage) {
+      const { tokens, contextWindow, percent } = contextUsage;
+      const percentStr = percent !== null ? `${percent.toFixed(1)}%` : "?%";
+      const limitStr = `${(contextWindow / 1000).toFixed(0)}k`;
+      statsParts.push(`${percentStr}/${limitStr}`);
     }
 
-    ctx.ui.notify("请使用微信扫描二维码...", "info");
+    let totalCost = 0;
+    for (const entry of ctx.sessionManager.getBranch()) {
+      const entryObj = entry as { type?: string; message?: { role?: string; usage?: { cost?: { total?: number } } } };
+      if (entryObj.type === "message" && entryObj.message?.role === "assistant") {
+        totalCost += entryObj.message.usage?.cost?.total ?? 0;
+      }
+    }
+    if (totalCost > 0) {
+      statsParts.push(`$${totalCost.toFixed(3)}`);
+    }
 
-    // Display QR code using qrcode-terminal
+    if (ctx.model) {
+      statsParts.push(`(${ctx.model.provider}) ${ctx.model.id}`);
+    }
+
+    if (statsParts.length > 0) {
+      lines.push(statsParts.join(" "));
+    }
+
+    return lines.join("\n");
+  }
+
+  // ============== 登录处理 ==============
+
+  async function handleLogin(ctx: ExtensionCommandContext) {
     try {
-      // qrcode-terminal is a CommonJS module, use require() for compatibility
-      const qrcodeTerminal = require("qrcode-terminal");
-      qrcodeTerminal.generate(startResult.qrcodeUrl, { small: true }, (qr: string) => {
-        console.log(qr);
+      const startResult = await startWeixinLoginWithQr({
+        apiBaseUrl: "https://ilinkai.weixin.qq.com",
+        botType: DEFAULT_ILINK_BOT_TYPE,
+        verbose: true,
       });
-      console.log("如果二维码未能成功展示，请用浏览器打开以下链接扫码：");
-      console.log(startResult.qrcodeUrl);
+
+      if (!startResult.qrcodeUrl) {
+        ctx.ui.notify(`Failed to get QR code: ${startResult.message}`, "error");
+        return;
+      }
+
+      ctx.ui.notify("请使用微信扫描二维码...", "info");
+
+      try {
+        const qrcodeTerminal = require("qrcode-terminal");
+        qrcodeTerminal.generate(startResult.qrcodeUrl, { small: true }, (qr: string) => {
+          console.log(qr);
+        });
+        console.log("如果二维码未能成功展示，请用浏览器打开以下链接扫码：");
+        console.log(startResult.qrcodeUrl);
+      } catch {
+        ctx.ui.notify("Failed to display QR code in terminal", "error");
+        console.log("请用浏览器打开以下链接扫码：");
+        console.log(startResult.qrcodeUrl);
+      }
+
+      const loginResult = await waitForWeixinLogin({
+        sessionKey: startResult.sessionKey,
+        apiBaseUrl: "https://ilinkai.weixin.qq.com",
+        timeoutMs: 480_000,
+        verbose: true,
+        botType: DEFAULT_ILINK_BOT_TYPE,
+      });
+
+      if (loginResult.connected) {
+        const accountId = loginResult.accountId!;
+        const botToken = loginResult.botToken!;
+
+        await saveToken(accountId, {
+          botToken,
+          accountId,
+          userId: loginResult.userId!,
+          baseUrl: loginResult.baseUrl!,
+          loginAt: Date.now(),
+        });
+
+        await upsertAccount({
+          accountId,
+          displayName: "微信账号",
+          loginAt: Date.now(),
+        });
+
+        ctx.ui.notify("✅ 与微信连接成功！", "info");
+
+        setConfig({ baseUrl: loginResult.baseUrl!, token: botToken });
+
+        // 登录成功后自动启动轮询
+        engine.startPolling({ baseUrl: loginResult.baseUrl!, token: botToken }).catch((err) => {
+          ctx.ui.notify(`启动轮询失败: ${err.message}`, "error");
+        });
+
+        console.log("\n=== 登录成功 ===");
+        console.log(JSON.stringify({
+          botToken,
+          accountId,
+          userId: loginResult.userId,
+          baseUrl: loginResult.baseUrl,
+        }, null, 2));
+        console.log("================\n");
+      } else {
+        ctx.ui.notify(`登录失败: ${loginResult.message}`, "error");
+      }
     } catch (err) {
-      ctx.ui.notify("Failed to display QR code in terminal", "error");
-      console.log("请用浏览器打开以下链接扫码：");
-      console.log(startResult.qrcodeUrl);
+      ctx.ui.notify(`登录异常: ${String(err)}`, "error");
     }
-
-    // Step 2: Wait for login
-    const loginResult = await waitForWeixinLogin({
-      sessionKey: startResult.sessionKey,
-      apiBaseUrl: "https://ilinkai.weixin.qq.com",
-      timeoutMs: 480_000, // 8 minutes
-      verbose: true,
-      botType: DEFAULT_ILINK_BOT_TYPE,
-    });
-
-    if (loginResult.connected) {
-      const accountId = loginResult.accountId!;
-      const botToken = loginResult.botToken!;
-
-      // 保存登录凭证
-      await saveToken(accountId, {
-        botToken,
-        accountId,
-        userId: loginResult.userId!,
-        baseUrl: loginResult.baseUrl!,
-        loginAt: Date.now(),
-      });
-
-      // 保存账号索引
-      await upsertAccount({
-        accountId,
-        displayName: "微信账号",
-        loginAt: Date.now(),
-      });
-
-      ctx.ui.notify("✅ 与微信连接成功！", "info");
-
-      // 保存配置供 sendTyping 和 sendMessage 使用
-      setConfig({ baseUrl: loginResult.baseUrl!, token: botToken });
-
-      // 登录成功后自动启动轮询
-      engine.startPolling({ baseUrl: loginResult.baseUrl!, token: botToken }).catch((err) => {
-        ctx.ui.notify(`启动轮询失败: ${err.message}`, "error");
-      });
-
-      // Output server response
-      console.log("\n=== 登录成功 ===");
-      console.log("服务器返回信息：");
-      console.log(JSON.stringify({
-        botToken,
-        accountId,
-        userId: loginResult.userId,
-        baseUrl: loginResult.baseUrl,
-      }, null, 2));
-      console.log("================\n");
-    } else {
-      ctx.ui.notify(`登录失败: ${loginResult.message}`, "error");
-    }
-  } catch (err) {
-    ctx.ui.notify(`登录异常: ${String(err)}`, "error");
   }
 }
-
