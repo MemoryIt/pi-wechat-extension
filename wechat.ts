@@ -249,8 +249,8 @@ export class WechatEngine {
       if (imagePaths.length > 0) {
         const replyText = `图片已收到，成功保存到 ${imagePaths[0]}`;
         await this.sendReplyToUser(replyText);
-        
-        // 加入会话历史
+
+        // 加入会话历史（带前缀，AI 可以看到，但触发 turn: false 避免递归）
         const prefix = getPrefix();
         (pi.sendMessage as (msg: unknown, opts?: unknown) => Promise<void>)(
           { customType: "wechat-image-path", content: `${prefix} ${replyText}` },
@@ -288,26 +288,39 @@ export class WechatEngine {
 
     debugLog(`triggerAi: requestId=${requestId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
 
-    // 格式化消息：简化为 {prefix} {content}
-    const formatted = await this.formatMessage(msg, opts);
-
     // 写入 wechat_meta（仅 requestId）
     (pi.appendEntry as (type: string, data: unknown) => void)("wechat_meta", {
       requestId,
     });
 
-    // 触发 AI
-    (pi.sendUserMessage as (content: string, opts?: unknown) => Promise<void>)(formatted, {
+    // 终端显示（带前缀）
+    const displayMessage = await this.formatMessage(msg, opts);
+    (pi.appendEntry as (type: string, data: unknown) => void)("display", {
+      content: displayMessage,
+      role: "user",
+    });
+
+    // 发送给 AI（纯内容，不带前缀）
+    const content = await this.formatContent(msg, opts);
+    (pi.sendUserMessage as (content: string, opts?: unknown) => Promise<void>)(content, {
       deliverAs: "followUp",
     });
   }
 
   /**
-   * 格式化微信消息
+   * 格式化微信消息（用于终端显示，带前缀）
    * 格式: {prefix} {content}
    */
   async formatMessage(msg: WeixinMessage, opts: { baseUrl: string; token: string }): Promise<string> {
     const prefix = getPrefix();
+    const content = await this.formatContent(msg, opts);
+    return `${prefix} ${content}`;
+  }
+
+  /**
+   * 格式化微信消息内容（不含前缀，仅用于发送给 AI）
+   */
+  async formatContent(msg: WeixinMessage, opts: { baseUrl: string; token: string }): Promise<string> {
     const parts: string[] = [];
 
     for (const item of msg.item_list ?? []) {
@@ -332,7 +345,7 @@ export class WechatEngine {
       }
     }
 
-    return `${prefix} ${parts.join("\n")}`;
+    return parts.join("\n");
   }
 
   /**
