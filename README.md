@@ -121,22 +121,6 @@ pnpm install
         └── sync.json            # 轮询 sync cursor
 ```
 
-### 测试
-
-项目包含完整的单元测试：
-
-```bash
-# 运行所有测试
-pnpm test
-
-# 运行特定测试文件
-pnpm test -- config.test.ts
-pnpm test -- storage/storage.test.ts
-pnpm test -- wechat.test.ts
-```
-
-**测试覆盖**：48 个测试用例，覆盖配置、存储、核心引擎等模块。
-
 ## 项目结构
 
 ```
@@ -174,9 +158,55 @@ pnpm build
 
 ### 测试
 
+项目使用 [Vitest](https://vitest.dev/) 作为测试框架。
+
+#### 运行测试
+
 ```bash
-pnpm test          # 运行测试
-pnpm test --watch  # 监听模式
+# 运行所有测试（一次性）
+pnpm test
+
+# 监听模式（文件变化时自动重新运行）
+pnpm test --watch
+
+# 运行特定测试文件
+pnpm test -- wechat.test.ts
+pnpm test -- config.test.ts
+pnpm test -- storage/storage.test.ts
+
+# 显示测试覆盖率
+pnpm test -- --coverage
+```
+
+#### 测试文件
+
+| 文件 | 说明 |
+|------|------|
+| `config.test.ts` | 配置管理测试（前缀、默认值、覆盖、环境变量） |
+| `wechat.test.ts` | 核心引擎测试（requestId、消息格式化、队列、Typing、发送、防重） |
+| `storage/storage.test.ts` | 存储模块测试（持久化函数存在性检查） |
+
+#### 测试覆盖模块
+
+| 模块 | 测试内容 |
+|------|----------|
+| **requestId 生成** | 格式验证、唯一性、时间戳精度 |
+| **消息格式化** | 文本消息、图片消息、混合内容、空内容 |
+| **单用户初始化** | 凭证加载、contextToken 缺失警告 |
+| **消息队列** | 入队、出队、并发处理 |
+| **Typing Keepalive** | 启动、停止、ticket 缓存、错误恢复 |
+| **消息发送** | 单用户回复、重试机制、防重检查 |
+| **状态重置** | 全局状态清理 |
+| **消息处理流程** | slash command 检测、contextToken 更新 |
+
+#### 测试用例统计
+
+```
+config.test.ts         : 10 个测试用例
+wechat.test.ts         : 27 个测试用例
+storage/storage.test.ts :  9 个测试用例
+────────────────────────────────────────
+总计                    : 46 个测试用例
 ```
 
 ### 类型检查
