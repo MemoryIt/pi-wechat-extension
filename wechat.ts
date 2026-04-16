@@ -107,6 +107,50 @@ const CONTENT_TYPE_EXT_MAP: Record<string, string> = {
 };
 
 /**
+ * 根据文件头魔数（Magic Bytes）检测文件类型
+ */
+function detectFileType(buffer: Buffer): string | null {
+  if (buffer.length < 4) return null;
+
+  // JPEG: FF D8 FF
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+    return "jpg";
+  }
+  // PNG: 89 50 4E 47
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+    return "png";
+  }
+  // GIF: 47 49 46 38
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) {
+    return "gif";
+  }
+  // WebP: 52 49 46 46 ... 57 45 42 50 (RIFF....WEBP)
+  if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46) {
+    if (buffer.length >= 8 && buffer[4] === 0x57 && buffer[5] === 0x45 && buffer[6] === 0x42 && buffer[7] === 0x50) {
+      return "webp";
+    }
+  }
+  // BMP: 42 4D
+  if (buffer[0] === 0x42 && buffer[1] === 0x4D) {
+    return "bmp";
+  }
+  // MP4/QuickTime: 66 74 79 70 (ftyp)
+  if (buffer[0] === 0x66 && buffer[1] === 0x74 && buffer[2] === 0x79 && buffer[3] === 0x70) {
+    return "mp4";
+  }
+  // SILK: 02 开头
+  if (buffer[0] === 0x02) {
+    return "silk";
+  }
+  // OGG: 4F 67 67 53 (OggS)
+  if (buffer[0] === 0x4F && buffer[1] === 0x67 && buffer[2] === 0x67 && buffer[3] === 0x53) {
+    return "ogg";
+  }
+
+  return null;
+}
+
+/**
  * SaveMediaFn 回调实现（用于 downloadMediaFromItem）
  */
 type SaveMediaFn = (
@@ -125,7 +169,8 @@ function createSaveMediaCallback(): SaveMediaFn {
     } else if (contentType) {
       ext = CONTENT_TYPE_EXT_MAP[contentType] ?? 'bin';
     } else {
-      ext = 'bin';
+      // 尝试通过魔数检测
+      ext = detectFileType(buffer) ?? 'bin';
     }
     const path = saveMediaToStorage(buffer, ext);
     return { path };
