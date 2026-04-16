@@ -610,7 +610,19 @@ export class WechatEngine {
     this.currentRequestId = null;
     this.isAiProcessing = false;
     this.cleanupCounter = 0;
+    
+    // 停止并重建 AbortController
+    this.abortController.abort();
     this.abortController = new AbortController();
+    
+    // 清空账号相关状态
+    this.accountId = null;
+    this.singleUserId = null;
+    this.singleContextToken = null;
+    
+    // 重置连接状态
+    this.state.syncCursor = "";
+    this.state.connectionState = "disconnected";
     
     debugLog("Engine state reset");
   }

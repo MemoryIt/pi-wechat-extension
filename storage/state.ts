@@ -14,7 +14,7 @@
  *         └── sync.json
  */
 
-import { readFileSync, writeFileSync, chmodSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, chmodSync, mkdirSync, existsSync, unlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { logger } from "../util/logger.js";
@@ -106,6 +106,17 @@ export async function deleteToken(accountId: string): Promise<void> {
   if (existsSync(path)) {
     unlinkSync(path);
     logger.info(`Token deleted for account: ${accountId}`);
+  }
+}
+
+/**
+ * 删除整个账号目录（包括 token.json、context-tokens.json、sync.json 等所有文件）
+ */
+export async function deleteAccountData(accountId: string): Promise<void> {
+  const accountDir = join(BASE_DIR, "accounts", accountId);
+  if (existsSync(accountDir)) {
+    rmSync(accountDir, { recursive: true, force: true });
+    logger.info(`Account data deleted for: ${accountId}`);
   }
 }
 
