@@ -5,7 +5,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "./auth/login-qr.js";
-import { saveToken, upsertAccount, deleteToken, removeAccount, getDefaultAccountToken } from "./storage/state.js";
+import { saveToken, upsertAccount, deleteToken, deleteAccountData, removeAccount, getDefaultAccountToken } from "./storage/state.js";
 import { engine, setPi, setConfig } from "./wechat.js";
 import { isDebugEnabled } from "./config.js";
 
@@ -62,7 +62,7 @@ export default function (pi: ExtensionAPI) {
         engine.stopPolling();
         const token = await getDefaultAccountToken();
         if (token) {
-          await deleteToken(token.accountId);
+          await deleteAccountData(token.accountId);
           await removeAccount(token.accountId);
           ctx.ui.notify("WeChat: Logged out successfully", "info");
         } else {
