@@ -293,14 +293,7 @@ export class WechatEngine {
       requestId,
     });
 
-    // 终端显示（带前缀）
-    const displayMessage = await this.formatMessage(msg, opts);
-    (pi.appendEntry as (type: string, data: unknown) => void)("display", {
-      content: displayMessage,
-      role: "user",
-    });
-
-    // 发送给 AI（纯内容，不带前缀）
+    // 发送给 AI
     const content = await this.formatContent(msg, opts);
     (pi.sendUserMessage as (content: string, opts?: unknown) => Promise<void>)(content, {
       deliverAs: "followUp",
@@ -308,17 +301,7 @@ export class WechatEngine {
   }
 
   /**
-   * 格式化微信消息（用于终端显示，带前缀）
-   * 格式: {prefix} {content}
-   */
-  async formatMessage(msg: WeixinMessage, opts: { baseUrl: string; token: string }): Promise<string> {
-    const prefix = getPrefix();
-    const content = await this.formatContent(msg, opts);
-    return `${prefix} ${content}`;
-  }
-
-  /**
-   * 格式化微信消息内容（不含前缀，仅用于发送给 AI）
+   * 格式化微信消息内容
    */
   async formatContent(msg: WeixinMessage, opts: { baseUrl: string; token: string }): Promise<string> {
     const parts: string[] = [];

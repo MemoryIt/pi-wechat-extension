@@ -145,82 +145,9 @@ describe("WechatEngine - Single User Version Tests", () => {
     });
   });
 
-  // ============== 2. 消息格式化测试 ==============
+  // ============== 2. 单用户初始化测试 ==============
   
-  describe("2. formatMessage (Simplified)", () => {
-    it("should format text message with prefix only", async () => {
-      const msg = {
-        from_user_id: "wxid_user1",
-        item_list: [
-          { type: 1, text_item: { text: "Hello world" } },
-        ],
-      } as any;
-
-      const result = await engine.formatMessage(msg, {
-        baseUrl: "https://ilinkai.weixin.qq.com",
-        token: "test_token",
-      });
-
-      // 新格式: [wechat] Hello world
-      expect(result).toBe("[wechat] Hello world");
-    });
-
-    it("should format image message with path", async () => {
-      // Mock downloadImage
-      vi.spyOn(engine, "downloadImage").mockResolvedValueOnce("/path/to/image.jpg");
-      
-      const msg = {
-        from_user_id: "wxid_user1",
-        item_list: [
-          { type: 2, image_item: { aeskey: "0".repeat(32), media: { full_url: "http://example.com/img", aes_key: "" } } },
-        ],
-      } as any;
-
-      const result = await engine.formatMessage(msg, {
-        baseUrl: "https://ilinkai.weixin.qq.com",
-        token: "test_token",
-      });
-
-      expect(result).toBe("[wechat] [image:/path/to/image.jpg]");
-    });
-
-    it("should format mixed content correctly", async () => {
-      vi.spyOn(engine, "downloadImage").mockResolvedValueOnce("/path/to/img.jpg");
-      
-      const msg = {
-        from_user_id: "wxid_user1",
-        item_list: [
-          { type: 1, text_item: { text: "Text" } },
-          { type: 2, image_item: { aeskey: "0".repeat(32), media: { full_url: "http://example.com/img", aes_key: "" } } },
-        ],
-      } as any;
-
-      const result = await engine.formatMessage(msg, {
-        baseUrl: "https://ilinkai.weixin.qq.com",
-        token: "test_token",
-      });
-
-      expect(result).toBe("[wechat] Text\n[image:/path/to/img.jpg]");
-    });
-
-    it("should handle empty content gracefully", async () => {
-      const msg = {
-        from_user_id: "wxid_user1",
-        item_list: [],
-      } as any;
-
-      const result = await engine.formatMessage(msg, {
-        baseUrl: "https://ilinkai.weixin.qq.com",
-        token: "test_token",
-      });
-
-      expect(result).toBe("[wechat] ");
-    });
-  });
-
-  // ============== 3. 单用户初始化测试 ==============
-  
-  describe("3. initSingleUser", () => {
+  describe("2. initSingleUser", () => {
     it("should initialize with valid credentials", async () => {
       mockStorage.getSingleUserCredentials.mockResolvedValueOnce({
         botToken: "token_abc",
@@ -266,7 +193,7 @@ describe("WechatEngine - Single User Version Tests", () => {
 
   // ============== 4. 消息队列测试 ==============
   
-  describe("4. Message Queue", () => {
+  describe("3. Message Queue", () => {
     it("should queue message when AI is processing", async () => {
       // 模拟 AI 正在处理
       (engine as any).isAiProcessing = true;
@@ -329,7 +256,7 @@ describe("WechatEngine - Single User Version Tests", () => {
 
   // ============== 5. Typing Keepalive 测试 ==============
   
-  describe("5. Typing Keepalive", () => {
+  describe("4. Typing Keepalive", () => {
     it("should start typing keepalive and cache ticket", async () => {
       // 先初始化单用户
       await engine.initSingleUser();
@@ -410,7 +337,7 @@ describe("WechatEngine - Single User Version Tests", () => {
 
   // ============== 6. 消息发送测试 ==============
   
-  describe("6. sendReplyToUser (Single User)", () => {
+  describe("5. sendReplyToUser (Single User)", () => {
     it("should send reply with correct parameters", async () => {
       // 先初始化单用户
       await engine.initSingleUser();
@@ -443,7 +370,7 @@ describe("WechatEngine - Single User Version Tests", () => {
     });
   });
 
-  describe("7. sendMessageWithRetry", () => {
+  describe("6. sendMessageWithRetry", () => {
     beforeEach(async () => {
       await engine.initSingleUser();
     });
@@ -471,7 +398,7 @@ describe("WechatEngine - Single User Version Tests", () => {
 
   // ============== 7. 防重机制测试 ==============
   
-  describe("8. Request Deduplication", () => {
+  describe("7. Request Deduplication", () => {
     it("should mark and check request as processed", () => {
       expect(engine.isRequestProcessed("req_123")).toBe(false);
       
@@ -500,7 +427,7 @@ describe("WechatEngine - Single User Version Tests", () => {
 
   // ============== 8. 状态重置测试 ==============
   
-  describe("9. reset", () => {
+  describe("8. reset", () => {
     it("should clear all state", async () => {
       // 设置各种状态
       engine.markRequestProcessed("req1");
@@ -530,7 +457,7 @@ describe("WechatEngine - Single User Version Tests", () => {
 
   // ============== 9. 消息处理流程测试 ==============
   
-  describe("10. Message Handling Flow", () => {
+  describe("9. Message Handling Flow", () => {
     it("should detect slash command", () => {
       const slashMsg = {
         item_list: [{ type: 1, text_item: { text: "/help" } }],
