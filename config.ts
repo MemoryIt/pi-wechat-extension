@@ -17,6 +17,8 @@ export interface WechatPluginConfig {
   prefix: string;
   /** 是否启用调试日志 */
   debug?: boolean;
+  /** 媒体文件存储路径，默认: {agentDir}/wechat/media */
+  mediaStoragePath?: string;
 }
 
 export const DEFAULT_CONFIG: WechatPluginConfig = {
@@ -48,6 +50,7 @@ export function loadConfig(): WechatPluginConfig {
     cachedConfig = {
       prefix: envPrefix,
       debug: process.env.WECHAT_DEBUG === "true",
+      mediaStoragePath: process.env.WECHAT_MEDIA_PATH,
     };
     return cachedConfig;
   }
@@ -91,4 +94,13 @@ export function isDebugEnabled(): boolean {
  */
 export function clearConfigCache(): void {
   cachedConfig = null;
+}
+
+/**
+ * 获取媒体文件存储路径
+ * 优先级: 环境变量 WECHAT_MEDIA_PATH > config.json > 默认值
+ */
+export function getMediaStoragePath(): string {
+  const config = loadConfig();
+  return config.mediaStoragePath ?? join(getAgentDir(), "wechat", "media");
 }
