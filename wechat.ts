@@ -54,6 +54,21 @@ function getCurrentWeekFolder(): string {
 }
 
 /**
+ * 生成文件时间戳格式: YYYYMMDDHHMMSSmmm (17位)
+ */
+function generateFileTimestamp(): string {
+  const now = new Date();
+  const yy = String(now.getFullYear()).slice(-2);
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  const hh = String(now.getHours()).padStart(2, '0');
+  const min = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  const ms = String(now.getMilliseconds()).padStart(3, '0');
+  return `${yy}${mm}${dd}${hh}${min}${ss}${ms}`;
+}
+
+/**
  * 保存媒体文件到存储
  * 路径: {mediaStoragePath}/{year}{week}/{timestamp}_{uuid8}.{ext}
  */
@@ -66,11 +81,30 @@ function saveMediaToStorage(buffer: Buffer, ext: string): string {
     mkdirSync(targetDir, { recursive: true });
   }
 
-  const filename = `${Date.now()}_${randomUUID().slice(0, 8)}.${ext}`;
+  const filename = `${generateFileTimestamp()}_${randomUUID().slice(0, 8)}.${ext}`;
   const filepath = join(targetDir, filename);
   writeFileSync(filepath, buffer);
   return filepath;
 }
+
+/**
+ * MIME 类型到扩展名的映射
+ */
+const CONTENT_TYPE_EXT_MAP: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/png": "png",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/bmp": "bmp",
+  "audio/wav": "wav",
+  "audio/silk": "silk",
+  "audio/mp3": "mp3",
+  "audio/ogg": "ogg",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+};
 
 /**
  * SaveMediaFn 回调实现（用于 downloadMediaFromItem）
@@ -84,8 +118,15 @@ type SaveMediaFn = (
 ) => Promise<{ path: string }>;
 
 function createSaveMediaCallback(): SaveMediaFn {
-  return async (buffer, _contentType, _subdir, _maxBytes, originalFilename) => {
-    const ext = originalFilename?.split('.').pop() ?? 'bin';
+  return async (buffer, contentType, _subdir, _maxBytes, originalFilename) => {
+    let ext: string;
+    if (originalFilename) {
+      ext = originalFilename.split('.').pop() ?? 'bin';
+    } else if (contentType) {
+      ext = CONTENT_TYPE_EXT_MAP[contentType] ?? 'bin';
+    } else {
+      ext = 'bin';
+    }
     const path = saveMediaToStorage(buffer, ext);
     return { path };
   };
