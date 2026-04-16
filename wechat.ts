@@ -9,16 +9,16 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
-import type { WeixinMessage, ImageItem } from "./api/types";
+import type { WeixinMessage } from "./api/types";
+import { MessageItemType } from "./api/types.js";
 import { getUpdates, sendMessage, sendTyping, getConfig } from "./api/api.js";
 import { ConnectionState } from "./types.js";
 import * as storage from "./storage/state.js";
 import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import crypto from "node:crypto";
-import { getPrefix, isDebugEnabled } from "./config.js";
+import { getMediaStoragePath, isDebugEnabled } from "./config.js";
+import { downloadMediaFromItem } from "./media/media-download.js";
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 
@@ -30,22 +30,65 @@ function debugLog(message: string, ...args: unknown[]): void {
   }
 }
 
-// ============== 图片存储配置 ==============
+// ============== 媒体存储配置 ==============
 
-const MEDIA_STORAGE_DIR = join(getAgentDir(), "wechat", "media", "inbound");
-
-function ensureMediaDir(): void {
-  if (!existsSync(MEDIA_STORAGE_DIR)) {
-    mkdirSync(MEDIA_STORAGE_DIR, { recursive: true });
-  }
+/**
+ * 获取 ISO 周数
+ */
+function getISOWeek(date: Date): number {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
 }
 
-function saveImageToStorage(buffer: Buffer, ext: string = ".jpg"): string {
-  ensureMediaDir();
-  const filename = `${Date.now()}_${randomUUID().slice(0, 8)}${ext}`;
-  const filepath = join(MEDIA_STORAGE_DIR, filename);
+/**
+ * 获取当前 ISO 周文件夹名称，格式: {year}{week} (如 "2605")
+ */
+function getCurrentWeekFolder(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const week = getISOWeek(now);
+  return `${String(year).slice(-2)}${String(week).padStart(2, '0')}`;
+}
+
+/**
+ * 保存媒体文件到存储
+ * 路径: {mediaStoragePath}/{year}{week}/{timestamp}_{uuid8}.{ext}
+ */
+function saveMediaToStorage(buffer: Buffer, ext: string): string {
+  const basePath = getMediaStoragePath();
+  const weekFolder = getCurrentWeekFolder();
+  const targetDir = join(basePath, weekFolder);
+
+  if (!existsSync(targetDir)) {
+    mkdirSync(targetDir, { recursive: true });
+  }
+
+  const filename = `${Date.now()}_${randomUUID().slice(0, 8)}.${ext}`;
+  const filepath = join(targetDir, filename);
   writeFileSync(filepath, buffer);
   return filepath;
+}
+
+/**
+ * SaveMediaFn 回调实现（用于 downloadMediaFromItem）
+ */
+type SaveMediaFn = (
+  buffer: Buffer,
+  contentType?: string,
+  subdir?: string,
+  maxBytes?: number,
+  originalFilename?: string,
+) => Promise<{ path: string }>;
+
+function createSaveMediaCallback(): SaveMediaFn {
+  return async (buffer, _contentType, _subdir, _maxBytes, originalFilename) => {
+    const ext = originalFilename?.split('.').pop() ?? 'bin';
+    const path = saveMediaToStorage(buffer, ext);
+    return { path };
+  };
 }
 
 // ============== 全局变量 ==============
@@ -229,31 +272,50 @@ export class WechatEngine {
       }
     }
 
-    // 纯图片消息拦截
-    const hasText = msg.item_list?.some(item => item.type === 1 && item.text_item?.text?.trim());
-    const hasImage = msg.item_list?.some(item => item.type === 2);
+    // 拦截所有非文本消息（媒体文件）
+    const hasText = msg.item_list?.some(item => item.type === MessageItemType.TEXT && item.text_item?.text?.trim());
+    const hasMedia = msg.item_list?.some(item => item.type !== MessageItemType.TEXT);
 
-    if (hasImage && !hasText) {
-      debugLog(`Pure image message detected`);
-      
-      const imagePaths: string[] = [];
+    if (hasMedia && !hasText) {
+      debugLog(`Media message detected (non-text items)`);
+
+      const saveMedia = createSaveMediaCallback();
+      const mediaPaths: string[] = [];
+
       for (const item of msg.item_list ?? []) {
-        if (item.type === 2 && item.image_item) {
-          const imagePath = await this.downloadImage(item.image_item, opts.baseUrl, opts.token);
-          if (imagePath) {
-            imagePaths.push(imagePath);
+        if (item.type === MessageItemType.TEXT) continue;
+
+        try {
+          const result = await downloadMediaFromItem(item, {
+            cdnBaseUrl: opts.baseUrl,
+            saveMedia,
+            log: debugLog,
+            errLog: console.error,
+            label: `media-${item.type}`,
+          });
+
+          const savedPath =
+            result.decryptedPicPath ??
+            result.decryptedVoicePath ??
+            result.decryptedFilePath ??
+            result.decryptedVideoPath;
+
+          if (savedPath) {
+            mediaPaths.push(savedPath);
+            debugLog(`Media saved: ${savedPath}`);
           }
+        } catch (err) {
+          console.error(`[Wechat] Media download failed for type ${item.type}:`, err);
         }
       }
 
-      if (imagePaths.length > 0) {
-        const replyText = `图片已收到，成功保存到 ${imagePaths[0]}`;
+      if (mediaPaths.length > 0) {
+        const replyText = `媒体文件已收到，成功保存到 ${mediaPaths[0]}`;
         await this.sendReplyToUser(replyText);
 
-        // 加入会话历史（带前缀，AI 可以看到，但触发 turn: false 避免递归）
-        const prefix = getPrefix();
+        // 加入会话历史（不带前缀，不触发模型回复）
         (pi.sendMessage as (msg: unknown, opts?: unknown) => Promise<void>)(
-          { customType: "wechat-image-path", content: `${prefix} ${replyText}` },
+          { content: replyText },
           { triggerTurn: false, deliverAs: "followUp" }
         );
       }
@@ -293,42 +355,18 @@ export class WechatEngine {
       requestId,
     });
 
-    // 发送给 AI
-    const content = await this.formatContent(msg, opts);
+    // 直接获取文本内容
+    const textParts: string[] = [];
+    for (const item of msg.item_list ?? []) {
+      if (item.type === MessageItemType.TEXT) {
+        textParts.push(item.text_item?.text ?? "");
+      }
+    }
+    const content = textParts.join("\n");
+
     (pi.sendUserMessage as (content: string, opts?: unknown) => Promise<void>)(content, {
       deliverAs: "followUp",
     });
-  }
-
-  /**
-   * 格式化微信消息内容
-   */
-  async formatContent(msg: WeixinMessage, opts: { baseUrl: string; token: string }): Promise<string> {
-    const parts: string[] = [];
-
-    for (const item of msg.item_list ?? []) {
-      switch (item.type) {
-        case 1: // TEXT
-          parts.push(item.text_item?.text ?? "");
-          break;
-        case 2: // IMAGE
-          const imagePath = await this.downloadImage(item.image_item!, opts.baseUrl, opts.token);
-          parts.push(imagePath ? `[image:${imagePath}]` : "[📷 图片下载失败]");
-          break;
-        case 3: // VOICE
-          // @ts-ignore - decryptedPath 由媒体下载模块添加
-          parts.push(`[语音: ${item.voice_item?.decryptedPath ?? "unknown"}]`);
-          break;
-        case 4: // FILE
-          parts.push(`[文件: ${item.file_item?.file_name ?? "unknown"}]`);
-          break;
-        case 5: // VIDEO
-          parts.push("[视频]");
-          break;
-      }
-    }
-
-    return parts.join("\n");
   }
 
   /**
@@ -608,57 +646,6 @@ export class WechatEngine {
     this.state.connectionState = "disconnected";
     
     debugLog("Engine state reset");
-  }
-
-  // ============== 图片下载 ==============
-
-  private parseAesKey(aesKeyInput: string): Buffer | null {
-    if (!aesKeyInput) return null;
-    const trimmed = aesKeyInput.trim();
-
-    if (trimmed.length === 32 && /^[0-9a-fA-F]{32}$/.test(trimmed)) {
-      return Buffer.from(trimmed, "hex");
-    }
-
-    try {
-      const decoded = Buffer.from(trimmed, "base64");
-      if (decoded.length === 16) return decoded;
-      if (decoded.length === 24) {
-        const hexStr = decoded.toString("utf8").trim();
-        if (/^[0-9a-fA-F]{32}$/.test(hexStr)) {
-          return Buffer.from(hexStr, "hex");
-        }
-      }
-    } catch {
-      // ignore
-    }
-
-    return null;
-  }
-
-  async downloadImage(img: ImageItem, baseUrl: string, token: string): Promise<string | null> {
-    try {
-      const target = img.thumb_media || img.media;
-      const fullUrl = target?.full_url;
-      const aesKeyRaw = img.aeskey || img.media?.aes_key;
-
-      if (!fullUrl || !aesKeyRaw) return null;
-
-      const aesKey = this.parseAesKey(aesKeyRaw);
-      if (!aesKey) return null;
-
-      const res = await fetch(fullUrl);
-      if (!res.ok) return null;
-
-      const encrypted = Buffer.from(await res.arrayBuffer());
-      const decrypted = crypto.createDecipheriv("aes-128-ecb", aesKey, null);
-      const final = Buffer.concat([decrypted.update(encrypted), decrypted.final()]);
-
-      return saveImageToStorage(final, ".jpg");
-    } catch (err) {
-      console.error(`[Wechat] Image download failed:`, err);
-      return null;
-    }
   }
 
   // ============== 工具方法 ==============
