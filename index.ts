@@ -59,7 +59,7 @@ export default function (pi: ExtensionAPI) {
         engine.stopPolling();
         ctx.ui.notify("WeChat: Stopped polling", "info");
       } else if (subcommand === "logout") {
-        engine.stopPolling();
+        engine.reset();
         const token = await getDefaultAccountToken();
         if (token) {
           await deleteAccountData(token.accountId);

@@ -611,6 +611,7 @@ export class WechatEngine {
     this.isAiProcessing = false;
     this.cleanupCounter = 0;
     this.abortController = new AbortController();
+    this.accountId = null;  // 清空账号 ID，防止 logout 后意外重建目录
     
     debugLog("Engine state reset");
   }
