@@ -13,6 +13,12 @@ import { isDebugEnabled } from "./config.js";
 
 let cachedGitBranch: string | null = null;
 
+// 标识当前消息是否来自微信（默认 false）
+let isCurrentMessageFromWechat = false;
+
+// 保存当前消息的 requestId
+let currentRequestId: string | null = null;
+
 // ============== 调试日志辅助函数 ==============
 
 function debugLog(message: string, ...args: unknown[]): void {
@@ -117,8 +123,10 @@ export default function (pi: ExtensionAPI) {
   // ============== before_agent_start ==============
 
   pi.on("before_agent_start", async (_event, ctx) => {
-    // 通过 sessionManager 检测是否是微信消息
+    // 标识当前消息是否来自微信
     const wechatMeta = findWechatMetaFromSession(ctx);
+    isCurrentMessageFromWechat = !!wechatMeta;
+    currentRequestId = wechatMeta?.requestId ?? null;
     if (wechatMeta) {
       debugLog(`before_agent_start: WeChat message detected, requestId=${wechatMeta.requestId}`);
     }
@@ -127,15 +135,19 @@ export default function (pi: ExtensionAPI) {
   // ============== message_start ==============
 
   pi.on("message_start", async (_event, _ctx) => {
-    debugLog(`message_start: starting typing keepalive`);
-    await engine.startTypingKeepalive();
+    if (isCurrentMessageFromWechat) {
+      debugLog(`message_start: starting typing keepalive`);
+      await engine.startTypingKeepalive();
+    }
   });
 
   // ============== message_end ==============
 
   pi.on("message_end", async (_event, _ctx) => {
-    debugLog(`message_end: stopping typing keepalive`);
-    await engine.stopTypingKeepalive();
+    if (isCurrentMessageFromWechat) {
+      debugLog(`message_end: stopping typing keepalive`);
+      await engine.stopTypingKeepalive();
+    }
   });
 
   // ============== agent_end ==============
@@ -149,17 +161,21 @@ export default function (pi: ExtensionAPI) {
   // ============== agent_end 处理函数 ==============
 
   async function handleAgentEnd(event: unknown, ctx: ExtensionContext) {
-    // 从 sessionManager 获取 wechat_meta
     const eventObj = event as { messages?: unknown[] };
-    const wechatMeta = findWechatMetaFromSession(ctx);
 
-    if (!wechatMeta) {
+    if (!isCurrentMessageFromWechat) {
       // 终端消息，不发送微信
       engine.onAiDone();
       return;
     }
 
-    const requestId = wechatMeta.requestId;
+    // 使用 before_agent_start 时保存的 requestId
+    const requestId = currentRequestId;
+    if (!requestId) {
+      debugLog(`No requestId found`);
+      engine.onAiDone();
+      return;
+    }
 
     // 防重检查
     if (engine.isRequestProcessed(requestId)) {
@@ -208,16 +224,22 @@ export default function (pi: ExtensionAPI) {
 
   /**
    * 从 sessionManager 中查找 wechat_meta
+   * 只检查最后一个 entry（最近添加的），因为 wechat_meta 在 sendUserMessage 之前写入
    */
   function findWechatMetaFromSession(ctx: ExtensionContext): { requestId: string } | null {
     const entries = ctx.sessionManager.getBranch();
-    // 从后往前找最新的 wechat_meta
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const entry = entries[i] as { type?: string; customType?: string; data?: unknown };
-      if (entry.type === "custom" && entry.customType === "wechat_meta") {
-        return entry.data as { requestId: string };
-      }
+    
+    if (entries.length === 0) return null;
+    
+    // 只检查最后一个 entry（最近添加的）
+    const lastEntry = entries[entries.length - 1] as { type?: string; customType?: string; data?: unknown };
+    
+    // 检查最后一个 entry 是否是 wechat_meta
+    if (lastEntry.type === "custom" && lastEntry.customType === "wechat_meta") {
+      return lastEntry.data as { requestId: string };
     }
+    
+    // 最后一个 entry 不是 wechat_meta，说明不是微信消息
     return null;
   }
 
