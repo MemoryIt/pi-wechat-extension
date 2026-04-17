@@ -132,7 +132,19 @@ class WechatEngine {
   
   // === AI 处理状态 ===
   private isAiProcessing = false;
-  
+
+  // === 终端消息处理状态 ===
+  private isTerminalMessageProcessing = false;
+
+  // === getter/setter ===
+  getTerminalProcessing(): boolean {
+    return this.isTerminalMessageProcessing;
+  }
+
+  setTerminalProcessing(value: boolean): void {
+    this.isTerminalMessageProcessing = value;
+  }
+
   // === 消息队列（单用户，不需要 Map）===
   private pendingMessages: Array<{ msg: WeixinMessage; requestId: string }> = [];
   
@@ -230,6 +242,8 @@ private generateRequestId(): string {
     ↓ 是 → 下载图片 → 保存路径 → 发送回复 → 不触发 AI
 6. 格式化消息：`{prefix} {content}`
     ↓
+6b. **终端消息处理检测**：如果 `isTerminalProcessing=true`（终端消息正在处理），加入 `pendingMessages` 队列
+    ↓
 7. 写入 wechat_meta：`pi.appendEntry("wechat_meta", { requestId })`
     ↓
 8. pi.sendUserMessage(formatted, { deliverAs: "followUp" })
@@ -269,8 +283,12 @@ pi.on("session_start", async (_event, ctx) => {
 ```typescript
 pi.on("before_agent_start", async (event, _ctx) => {
   const prefix = getPrefix();
-  if (!event.prompt?.includes(prefix)) return;
-  
+  if (!event.prompt?.includes(prefix)) {
+    // 非微信消息（终端消息），设置终端处理标志
+    engine.setTerminalProcessing(true);
+    return;
+  }
+
   // 单用户直接使用闭包变量，无需正则提取 userId
   const requestId = engine.getCurrentRequestId();
   if (requestId) {
@@ -295,30 +313,33 @@ pi.on("message_end", async () => {
 
 ```typescript
 pi.on("agent_end", async (event, ctx) => {
+  // 终端消息处理结束，重置标志
+  const requestId = engine.getCurrentRequestId();
+  if (!requestId) {
+    // 无 requestId → 终端消息，重置终端处理状态
+    engine.setTerminalProcessing(false);
+    engine.onAiDone();
+    return;
+  }
+
   setTimeout(async () => {
-    const requestId = engine.getCurrentRequestId();
-    if (!requestId) {
-      engine.onAiDone();
-      return;
-    }
-    
     // 防重
     if (engine.isRequestProcessed(requestId)) return;
     engine.markRequestProcessed(requestId);
-    
+
     // 提取最后一条 assistant 回复
     const replyText = extractLastReply(event.messages);
     if (!replyText) {
       engine.onAiDone();
       return;
     }
-    
+
     // 追加元信息
     const finalReply = replyText + buildMetaInfoSuffix(ctx);
-    
+
     // 发送回复（使用单用户凭证）
     await engine.sendMessageWithRetry(finalReply);
-    
+
     engine.onAiDone();
   }, 20);
 });
@@ -429,7 +450,8 @@ private pendingMessages: Array<{ msg: WeixinMessage; requestId: string }> = [];
 
 // 触发 AI
 async triggerAi(msg, requestId, opts): Promise<void> {
-  if (this.isAiProcessing) {
+  // AI 忙碌或终端消息正在处理时，加入队列等待
+  if (this.isAiProcessing || this.isTerminalMessageProcessing) {
     this.pendingMessages.push({ msg, requestId });
     return;
   }
@@ -571,6 +593,7 @@ export WECHAT_DEBUG="true"
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v2.1 | 2026-04-17 | 修复终端消息处理时微信消息无法回复的问题：新增 isTerminalMessageProcessing 标志，终端消息处理期间微信消息进入队列等待 |
 | v2.0 | 2026-04-15 | 单用户模式重构：删除多用户逻辑，简化消息格式为 `{prefix} {content}`，requestId 改为毫秒时间戳，wechat_meta 仅保留 requestId |
 | v1.6 | 2026-04-13 | 图片消息支持 |
 | v1.5 | 2026-04-12 | Typing 状态修复、模型元信息 |

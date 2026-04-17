@@ -8,7 +8,7 @@
 - 登录测试：扫码成功，返回 botToken/accountId/userId/baseUrl ✅
 - Phase 2: 存储登录凭证（storage/state.ts）✅
 - **Phase 3a: 消息接收（wechat.ts 骨架 + 长轮询 + 消息格式化 + triggerAi）** ✅
-- **Phase 3b: 消息队列（pendingMessages + isAiProcessing + triggerAi + safelyTriggerNext + setTimeout 时序修复）** ✅
+- **Phase 3b: 消息队列（pendingMessages + isAiProcessing + isTerminalMessageProcessing + triggerAi + safelyTriggerNext + setTimeout 时序修复）** ✅
 - **Phase 3c: 回复发送（processedRequests + before_agent_start + agent_end + sendMessageWithRetry + reset）** ✅
 - **新版方案：只发最后一条消息（解决 tool call 和多消息块问题）** ✅
 - **Typing 状态修复（message_start/message_end + keepalive）** ✅
