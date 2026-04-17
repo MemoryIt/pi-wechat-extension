@@ -28,32 +28,30 @@
 - **长轮询**：实时接收微信消息
 - **连续消息队列**：用户连发多条消息，AI 按顺序逐条回复
 - **Typing 指示器**：AI 推理时显示 "正在输入..."
-- **图片消息**：接收图片并保存，AI 可读取分析
+- **媒体文件支持**：接收并保存语音/图片/视频/文件，AI 可读取分析
 - **模型元信息**：回复后追加当前目录、Git 分支、Token 使用、模型等信息
 
 ## 配置
 
-### 消息前缀
-
-插件使用固定前缀标识微信消息，支持自定义配置。
-
-**方式一：配置文件**
+### 配置文件
 
 创建 `~/.pi/agent/wechat/config.json`：
 
 ```json
 {
   "prefix": "[wechat]",
-  "debug": false
+  "debug": false,
+  "mediaStoragePath": "/custom/path/to/media"
 }
 ```
 
-**方式二：环境变量**
+### 环境变量
 
-```bash
-export WECHAT_PREFIX="[wechat]"
-export WECHAT_DEBUG="true"
-```
+| 变量名 | 说明 |
+|--------|------|
+| `WECHAT_PREFIX` | 消息前缀 |
+| `WECHAT_DEBUG` | 调试模式 (`true`/`false`) |
+| `WECHAT_MEDIA_PATH` | 媒体文件存储路径 |
 
 ### 配置项
 
@@ -61,6 +59,9 @@ export WECHAT_DEBUG="true"
 |--------|------|--------|------|
 | `prefix` | string | `[wechat]` | 消息前缀 |
 | `debug` | boolean | `false` | 调试模式 |
+| `mediaStoragePath` | string | `{agentDir}/wechat/media` | 媒体文件存储路径 |
+
+**配置优先级**: 环境变量 > config.json > 默认值
 
 ## 工作流程
 
@@ -99,8 +100,13 @@ pnpm install
 
 ```
 [wechat] 你好，我想问问项目进度
-[wechat] [图片: /path/to/image.jpg]
+[wechat] 媒体文件已收到，成功保存到 /path/to/image.jpg
+[wechat] 媒体文件已收到，成功保存到 /path/to/audio.silk
+[wechat] 媒体文件已收到，成功保存到 /path/to/document.pdf
+[wechat] 媒体文件已收到，成功保存到 /path/to/video.mp4
 ```
+
+**媒体文件存储路径**：可通过 `config.json` 或环境变量 `WECHAT_MEDIA_PATH` 配置，默认存储在 `~/.pi/agent/wechat/media/` 目录下。
 
 ## 技术细节
 

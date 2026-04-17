@@ -370,12 +370,37 @@ export class WechatEngine {
       }
     }
 
-    // 拦截所有非文本消息（媒体文件）
+    // 触发 AI 处理
+    await this.triggerAi(msg, requestId, opts);
+  }
+
+  /**
+   * 触发 AI 处理消息
+   * 单用户模式，无需 userId 参数
+   */
+  async triggerAi(msg: WeixinMessage, requestId: string, opts: { baseUrl: string; token: string }): Promise<void> {
+    // 只有当 AI 空闲且没有终端消息在处理时，才直接发送
+    // 否则加入队列等待
+    if (this.isAiProcessing || this.isTerminalMessageProcessing) {
+      // 加入队列
+      this.pendingMessages.push({ msg, requestId });
+      debugLog(`AI is ${this.isAiProcessing ? 'processing' : 'terminal processing'}, queued message (queue size: ${this.pendingMessages.length})`);
+      return;
+    }
+
+    await this.triggerAiInternal(msg, requestId, opts);
+  }
+
+  /**
+   * 内部方法：触发 AI 处理
+   */
+  private async triggerAiInternal(msg: WeixinMessage, requestId: string, opts: { baseUrl: string; token: string }): Promise<void> {
+    // === 媒体消息处理 ===
     const hasText = msg.item_list?.some(item => item.type === MessageItemType.TEXT && item.text_item?.text?.trim());
     const hasMedia = msg.item_list?.some(item => item.type !== MessageItemType.TEXT);
 
     if (hasMedia && !hasText) {
-      debugLog(`Media message detected (non-text items)`);
+      debugLog(`Media message detected, downloading...`);
 
       const saveMedia = createSaveMediaCallback();
       const mediaPaths: string[] = [];
@@ -407,44 +432,30 @@ export class WechatEngine {
         }
       }
 
+      // 回复用户并加入历史
       if (mediaPaths.length > 0) {
         const replyText = `媒体文件已收到，成功保存到 ${mediaPaths[0]}`;
         await this.sendReplyToUser(replyText);
 
-        // 加入会话历史（不带前缀，不触发模型回复）
+        // 加入会话历史（不触发 AI 回复）
         (pi.sendMessage as (msg: unknown, opts?: unknown) => Promise<void>)(
           { content: replyText },
           { triggerTurn: false, deliverAs: "followUp" }
         );
       }
+
+      // 标记处理完成并退出
+      this.isAiProcessing = false;
+      this.markRequestProcessed(requestId);
+
+      // 处理队列中的下一条
+      if (this.pendingMessages.length > 0) {
+        this.safelyTriggerNext();
+      }
       return;
     }
 
-    // 触发 AI 处理
-    await this.triggerAi(msg, requestId, opts);
-  }
-
-  /**
-   * 触发 AI 处理消息
-   * 单用户模式，无需 userId 参数
-   */
-  async triggerAi(msg: WeixinMessage, requestId: string, opts: { baseUrl: string; token: string }): Promise<void> {
-    // 只有当 AI 空闲且没有终端消息在处理时，才直接发送
-    // 否则加入队列等待
-    if (this.isAiProcessing || this.isTerminalMessageProcessing) {
-      // 加入队列
-      this.pendingMessages.push({ msg, requestId });
-      debugLog(`AI is ${this.isAiProcessing ? 'processing' : 'terminal processing'}, queued message (queue size: ${this.pendingMessages.length})`);
-      return;
-    }
-
-    await this.triggerAiInternal(msg, requestId, opts);
-  }
-
-  /**
-   * 内部方法：触发 AI 处理
-   */
-  private async triggerAiInternal(msg: WeixinMessage, requestId: string, opts: { baseUrl: string; token: string }): Promise<void> {
+    // === 文本消息处理 ===
     this.currentRequestId = requestId;
     this.isAiProcessing = true;
 
