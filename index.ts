@@ -127,8 +127,13 @@ export default function (pi: ExtensionAPI) {
     const wechatMeta = findWechatMetaFromSession(ctx);
     isCurrentMessageFromWechat = !!wechatMeta;
     currentRequestId = wechatMeta?.requestId ?? null;
+
     if (wechatMeta) {
       debugLog(`before_agent_start: WeChat message detected, requestId=${wechatMeta.requestId}`);
+    } else {
+      // 终端消息正在处理，微信消息需要排队
+      engine.setTerminalProcessing(true);
+      debugLog(`before_agent_start: Terminal message processing, WeChat messages will be queued`);
     }
   });
 
@@ -153,6 +158,11 @@ export default function (pi: ExtensionAPI) {
   // ============== agent_end ==============
 
   pi.on("agent_end", async (event, ctx) => {
+    // 如果是终端消息处理结束，重置终端处理状态
+    if (!isCurrentMessageFromWechat) {
+      engine.setTerminalProcessing(false);
+    }
+
     setTimeout(async () => {
       await handleAgentEnd(event, ctx);
     }, 20);
@@ -165,6 +175,8 @@ export default function (pi: ExtensionAPI) {
 
     if (!isCurrentMessageFromWechat) {
       // 终端消息，不发送微信
+      // 注意：isTerminalMessageProcessing 已在 agent_end 事件中重置
+      // onAiDone 会触发队列处理
       engine.onAiDone();
       return;
     }

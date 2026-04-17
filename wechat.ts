@@ -222,7 +222,10 @@ export class WechatEngine {
 
   // === AI 处理状态 ===
   private isAiProcessing = false;
-  
+
+  // === 终端消息处理状态（新增）===
+  private isTerminalMessageProcessing = false;
+
   // === 消息队列（单用户，不需要 Map）===
   private pendingMessages: Array<{ msg: WeixinMessage; requestId: string }> = [];
 
@@ -235,6 +238,15 @@ export class WechatEngine {
   // === getter ===
   get connectionState(): ConnectionState {
     return this.state.connectionState;
+  }
+
+  // === 终端处理状态 getter/setter（新增）===
+  getTerminalProcessing(): boolean {
+    return this.isTerminalMessageProcessing;
+  }
+
+  setTerminalProcessing(value: boolean): void {
+    this.isTerminalMessageProcessing = value;
   }
 
   // ============== 核心方法 ==============
@@ -417,10 +429,12 @@ export class WechatEngine {
    * 单用户模式，无需 userId 参数
    */
   async triggerAi(msg: WeixinMessage, requestId: string, opts: { baseUrl: string; token: string }): Promise<void> {
-    if (this.isAiProcessing) {
+    // 只有当 AI 空闲且没有终端消息在处理时，才直接发送
+    // 否则加入队列等待
+    if (this.isAiProcessing || this.isTerminalMessageProcessing) {
       // 加入队列
       this.pendingMessages.push({ msg, requestId });
-      debugLog(`AI is processing, queued message (queue size: ${this.pendingMessages.length})`);
+      debugLog(`AI is ${this.isAiProcessing ? 'processing' : 'terminal processing'}, queued message (queue size: ${this.pendingMessages.length})`);
       return;
     }
 
