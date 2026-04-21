@@ -178,9 +178,9 @@ const prefix = getPrefix();  // "[wechat]"
 
 ---
 
-## Feature: 文件发送功能 (2026-04-21) ⚠️ 未完成
+## Feature: 文件发送功能 (2026-04-21) ✅
 
-**目标**：允许 AI 通过工具调用向微信用户发送本地文件
+**目标**：允许 AI 通过工具调用向微信用户发送本地文件（图片/视频/文档）
 
 ### 已实现功能
 
@@ -188,42 +188,30 @@ const prefix = getPrefix();  // "[wechat]"
 |------|------|
 | `send_wechat_file` Tool 注册 | ✅ |
 | 文件路径验证 | ✅ |
-| 文件上传至微信 CDN | ✅ |
-| 构造 `file_item` 消息 | ✅ |
+| 官方 `sendWeixinMediaFile` 封装 | ✅ |
+| 自动路由（图片/视频/文件） | ✅ |
 | 发送文件消息 | ✅ |
 
 ### 技术方案
 
 ```
 AI 调用 send_wechat_file(localPath)
-  → uploadFileAttachmentToWeixin() 上传文件到 CDN
-  → 计算本地文件 MD5
-  → 构造 type=4 (file_item) 消息体
-  → sendMessageToUser() 发送
+  → sendWeixinMediaFile() 官方高层函数（自动路由）
+      - image/* → uploadFileToWeixin + sendImageMessageWeixin
+      - video/* → uploadVideoToWeixin + sendVideoMessageWeixin
+      - 其他   → uploadFileAttachmentToWeixin + sendFileMessageWeixin
 ```
 
-### 当前问题
+### 修复历史
 
-**微信端能看见文件但无法完整下载**
-
-可能原因：
-1. `file_item` 参数不完整或格式错误
-2. AES 密钥编码方式有误（hex → base64）
-3. `encrypt_query_param` 格式不正确
-4. `md5` 应使用 CDN 返回值而非本地计算值
-5. `len` 字段类型或值不正确
-
-### 待调查
-
-- [ ] 对比 `cdn/upload.ts` 返回字段与官方文档
-- [ ] 确认 `encrypt_query_param` 是否需要额外处理
-- [ ] 确认 `md5` 来源（本地 vs CDN）
-- [ ] 抓包分析微信客户端实际请求参数
+| 日期 | 问题 | 解决方案 |
+|------|------|----------|
+| 2026-04-21 | 手动构造 `file_item` 导致微信端无法下载 | 改用官方 `sendWeixinMediaFile` |
 
 ### 修改文件
 
 - `index.ts` - 新增 `send_wechat_file` Tool (60 行)
-- `wechat.ts` - 新增 `sendMessageToUser()`, `sendFileToUser()` (110 行)
+- `wechat.ts` - 重构 `sendFileToUser()` 使用官方 `sendWeixinMediaFile`
 
 ---
 
@@ -231,4 +219,3 @@ AI 调用 send_wechat_file(localPath)
 
 - [ ] Slash Command：/echo, /toggle-debug, /help
 - [ ] 人工测试：单用户模式重构后的功能验证
-- [ ] **文件发送功能：微信端下载失败**

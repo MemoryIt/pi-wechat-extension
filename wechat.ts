@@ -8,11 +8,8 @@
  * 4. 单用户固定凭证，运行时从 storage 加载
  */
 
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { uploadFileAttachmentToWeixin, type UploadedFileInfo } from "./cdn/upload.js";
-// import { UploadedFileInfo } from "./cdn/upload.js";
+import { sendWeixinMediaFile } from "./messaging/send-media.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { WeixinMessage } from "./api/types";
 import { MessageItemType } from "./api/types.js";
@@ -697,10 +694,9 @@ export class WechatEngine {
   }
 
   /**
-   * 向微信发送本地文件（使用官方 cdn 模块）
+   * 向微信发送本地文件 —— 直接使用官方 sendWeixinMediaFile（自动路由图片/视频/文件）
    */
   async sendFileToUser(localPath: string, fileName?: string): Promise<void> {
-    // 防御性检查
     if (!localPath || typeof localPath !== "string") {
       throw new Error("sendFileToUser: localPath 不能为空");
     }
@@ -710,86 +706,26 @@ export class WechatEngine {
     }
 
     const displayName = fileName || path.basename(localPath);
-    debugLog(`sendFileToUser START: localPath=${localPath}, displayName=${displayName}`);
+    debugLog(`sendFileToUser START: localPath=${localPath}, displayName=${displayName} (使用官方 sendWeixinMediaFile)`);
 
-    const opts: WeixinApiOptions = {
+    const opts: WeixinApiOptions & { contextToken?: string } = {
       baseUrl: wechatConfig.baseUrl,
       token: wechatConfig.token,
+      contextToken: this.singleContextToken!,
     };
 
-    // CDN base URL（可根据实际调整）
     const cdnBaseUrl = "https://novac2c.cdn.weixin.qq.com/c2c";
-    debugLog(`sendFileToUser: using cdnBaseUrl=${cdnBaseUrl}`);
 
-    // Step 1: 调用官方模块上传文件
-    debugLog(`sendFileToUser Step1: calling uploadFileAttachmentToWeixin...`);
-    const uploaded: UploadedFileInfo = await uploadFileAttachmentToWeixin({
+    // 直接调用官方高层函数（自动处理 upload + 正确构造 item）
+    await sendWeixinMediaFile({
       filePath: localPath,
-      fileName: displayName,
-      toUserId: this.singleUserId,
+      to: this.singleUserId,
+      text: "",
       opts,
       cdnBaseUrl,
     });
 
-    // ====================== 关键调试日志 ======================
-    debugLog(`=== UPLOADED FULL OBJECT ===`);
-    console.dir(uploaded, { depth: null });
-    debugLog(`aeskey(hex length)=${uploaded.aeskey?.length}, downloadEncryptedQueryParam length=${uploaded.downloadEncryptedQueryParam?.length}`);
-    // ========================================================
-
-    debugLog(`sendFileToUser Step1 done: filekey=${uploaded.filekey}, size=${uploaded.fileSize}`);
-
-    // Step 2: 计算明文 MD5
-    debugLog(`sendFileToUser Step2: calculating raw MD5...`);
-    const buffer = await readFile(localPath);
-    const rawMd5 = createHash("md5").update(buffer).digest("hex");
-    debugLog(`sendFileToUser Step2 done: rawMd5=${rawMd5}`);
-
-    // Step 3: 构造 file_item —— 恢复官方稳定配置（encrypt_type=1 + no_need_thumb + 明文 len）
-    debugLog(`sendFileToUser Step3: building file_item (official stable config)...`);
-
-    let aesKeyBase64: string;
-    try {
-      const aesKeyBytes = Buffer.from(uploaded.aeskey, "hex");
-      aesKeyBase64 = aesKeyBytes.toString("base64");
-      debugLog(`aes_key converted: hex(${uploaded.aeskey.slice(0, 16)}...) → base64(${aesKeyBase64.slice(0, 20)}...)`);
-    } catch (e) {
-      throw new Error(`aes_key 处理失败: ${e}`);
-    }
-
-    const plaintextLen = String(uploaded.fileSize || buffer.length);
-
-    const itemList = [{
-      type: 4,
-      file_item: {
-        media: {
-          encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-          aes_key: aesKeyBase64,
-          encrypt_type: 1,
-        },
-        file_name: displayName,
-        md5: rawMd5,
-        len: plaintextLen,
-        no_need_thumb: true,
-        filekey: uploaded.filekey,
-      },
-    }];
-
-    debugLog(`=== FINAL FILE_ITEM (official stable: media + encrypt_type=1 + no_need_thumb) ===`);
-    console.dir(itemList[0].file_item, { depth: null });
-
-    debugLog(`sendFileToUser Step3 done: file_item ready (official stable)`);
-
-    // Step 4: 发送（确保 context_token 已存在）
-    if (!this.singleContextToken) {
-      debugLog(`[WARNING] No context_token! File may not be delivered.`);
-    }
-
-    // Step 4: 调用通用发送
-    debugLog(`sendFileToUser Step4: calling sendMessageToUser...`);
-    await this.sendMessageToUser(itemList);
-
-    debugLog(`sendFileToUser COMPLETE: 文件 "${displayName}" 发送成功 (size=${uploaded.fileSize} bytes)`);
+    debugLog(`sendFileToUser COMPLETE: 文件 "${displayName}" 已通过官方 sendWeixinMediaFile 发送成功`);
   }
 
   /**
