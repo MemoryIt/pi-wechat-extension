@@ -178,7 +178,57 @@ const prefix = getPrefix();  // "[wechat]"
 
 ---
 
+## Feature: 文件发送功能 (2026-04-21) ⚠️ 未完成
+
+**目标**：允许 AI 通过工具调用向微信用户发送本地文件
+
+### 已实现功能
+
+| 功能 | 状态 |
+|------|------|
+| `send_wechat_file` Tool 注册 | ✅ |
+| 文件路径验证 | ✅ |
+| 文件上传至微信 CDN | ✅ |
+| 构造 `file_item` 消息 | ✅ |
+| 发送文件消息 | ✅ |
+
+### 技术方案
+
+```
+AI 调用 send_wechat_file(localPath)
+  → uploadFileAttachmentToWeixin() 上传文件到 CDN
+  → 计算本地文件 MD5
+  → 构造 type=4 (file_item) 消息体
+  → sendMessageToUser() 发送
+```
+
+### 当前问题
+
+**微信端能看见文件但无法完整下载**
+
+可能原因：
+1. `file_item` 参数不完整或格式错误
+2. AES 密钥编码方式有误（hex → base64）
+3. `encrypt_query_param` 格式不正确
+4. `md5` 应使用 CDN 返回值而非本地计算值
+5. `len` 字段类型或值不正确
+
+### 待调查
+
+- [ ] 对比 `cdn/upload.ts` 返回字段与官方文档
+- [ ] 确认 `encrypt_query_param` 是否需要额外处理
+- [ ] 确认 `md5` 来源（本地 vs CDN）
+- [ ] 抓包分析微信客户端实际请求参数
+
+### 修改文件
+
+- `index.ts` - 新增 `send_wechat_file` Tool (60 行)
+- `wechat.ts` - 新增 `sendMessageToUser()`, `sendFileToUser()` (110 行)
+
+---
+
 ## Open Issues
 
 - [ ] Slash Command：/echo, /toggle-debug, /help
 - [ ] 人工测试：单用户模式重构后的功能验证
+- [ ] **文件发送功能：微信端下载失败**
