@@ -3,7 +3,6 @@
  * 微信插件配置管理
  * 
  * 配置路径: ~/.pi/agent/wechat/config.json
- * 或通过环境变量 WECHAT_PREFIX 配置
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -13,8 +12,6 @@ import { getAgentDir } from "@mariozechner/pi-coding-agent";
 // ============== 配置结构 ==============
 
 export interface WechatPluginConfig {
-  /** 消息前缀，默认为 [wechat] */
-  prefix: string;
   /** 是否启用调试日志 */
   debug?: boolean;
   /** 媒体文件存储路径，默认: {agentDir}/wechat/media */
@@ -45,10 +42,8 @@ export function loadConfig(): WechatPluginConfig {
   }
 
   // 1. 优先使用环境变量
-  const envPrefix = process.env.WECHAT_PREFIX;
-  if (envPrefix !== undefined) {
+  if (process.env.WECHAT_DEBUG === "true" || process.env.WECHAT_MEDIA_PATH) {
     cachedConfig = {
-      prefix: envPrefix,
       debug: process.env.WECHAT_DEBUG === "true",
       mediaStoragePath: process.env.WECHAT_MEDIA_PATH,
     };
@@ -73,13 +68,6 @@ export function loadConfig(): WechatPluginConfig {
   // 3. 使用默认值
   cachedConfig = { ...DEFAULT_CONFIG };
   return cachedConfig;
-}
-
-/**
- * 获取消息前缀
- */
-export function getPrefix(): string {
-  return loadConfig().prefix;
 }
 
 /**
