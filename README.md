@@ -236,10 +236,10 @@ pnpm test -- --coverage
 
 ```
 config.test.ts         : 10 个测试用例
-wechat.test.ts         : 27 个测试用例
+wechat.test.ts         : 23 个测试用例
 storage/storage.test.ts :  9 个测试用例
 ────────────────────────────────────────
-总计                    : 46 个测试用例
+总计                    : 42 个测试用例
 ```
 
 ### 类型检查

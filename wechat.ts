@@ -10,10 +10,11 @@
 
 import path from "node:path";
 import { sendWeixinMediaFile } from "./messaging/send-media.js";
+import { sendMessageWeixin } from "./messaging/send.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { WeixinMessage } from "./api/types";
 import { MessageItemType } from "./api/types.js";
-import { getUpdates, sendMessage, sendTyping, getConfig } from "./api/api.js";
+import { getUpdates, sendTyping, getConfig } from "./api/api.js";
 import type { WeixinApiOptions } from "./api/api.js";
 import { ConnectionState } from "./types.js";
 import * as storage from "./storage/state.js";
@@ -438,7 +439,7 @@ export class WechatEngine {
       // 回复用户并加入历史
       if (mediaPaths.length > 0) {
         const replyText = `媒体文件已收到，成功保存到 ${mediaPaths[0]}`;
-        await this.sendReplyToUser(replyText);
+        await this.sendTextMessage(replyText);
 
         // 加入会话历史（不触发 AI 回复）
         (pi.sendMessage as (msg: unknown, opts?: unknown) => Promise<void>)(
@@ -500,7 +501,7 @@ export class WechatEngine {
     const trimmed = text.trim();
 
     if (trimmed === "/help") {
-      await this.sendReplyToUser("可用命令: /help");
+      await this.sendTextMessage("可用命令: /help");
     }
   }
 
@@ -654,49 +655,32 @@ export class WechatEngine {
   // ============== 发送消息（单用户）==============
 
   /**
-   * 通用发送消息（支持文本、文件等多种 item_list）
+   * 使用官方 sendMessageWeixin 发送纯文字消息（推荐！）
+   * 完全取代 sendMessageToUser + sendReplyToUser
    */
-  async sendMessageToUser(itemList: unknown[]): Promise<void> {
+  async sendTextMessage(text: string): Promise<void> {
     if (!wechatConfig || !this.singleUserId || !this.singleContextToken) {
       throw new Error("Single user not initialized");
     }
+    debugLog(`sendTextMessage: text length=${text.length}`);
 
-    debugLog(`sendMessageToUser: preparing message with ${itemList.length} item(s)`);
-
-    const msg: WeixinMessage = {
-      from_user_id: "",
-      to_user_id: this.singleUserId,
-      client_id: randomUUID(),
-      message_type: 2,
-      message_state: 2,
-      context_token: this.singleContextToken!,
-      item_list: itemList,
-    };
-
-    debugLog(`sendMessageToUser: context_token length=${this.singleContextToken?.length || 0}`);
-    debugLog(`sendMessageToUser: item types=${itemList.map((i: unknown) => (i as { type?: number }).type).join(',')}`);
-    debugLog(`sendMessageToUser: calling sendMessage API...`);
-    await sendMessage({
-      baseUrl: wechatConfig.baseUrl,
-      token: wechatConfig.token,
-      body: { msg },
+    await sendMessageWeixin({
+      to: this.singleUserId,
+      text: text,
+      opts: {
+        baseUrl: wechatConfig.baseUrl,
+        token: wechatConfig.token,
+        contextToken: this.singleContextToken,
+      },
     });
-    debugLog(`sendMessageToUser: message sent successfully`);
-  }
-
-  /**
-   * 发送回复给单用户（保持兼容）
-   */
-  async sendReplyToUser(text: string): Promise<void> {
-    debugLog(`sendReplyToUser: text length=${text.length}`);
-    const itemList = [{ type: 1, text_item: { text } }];
-    await this.sendMessageToUser(itemList);
+    debugLog(`sendTextMessage: 文字消息发送成功`);
   }
 
   /**
    * 向微信发送本地文件 —— 直接使用官方 sendWeixinMediaFile（自动路由图片/视频/文件）
    */
   async sendFileToUser(localPath: string, fileName?: string): Promise<void> {
+    // 当前实现已完美复用官方模块，保持不变
     if (!localPath || typeof localPath !== "string") {
       throw new Error("sendFileToUser: localPath 不能为空");
     }
@@ -740,7 +724,7 @@ export class WechatEngine {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        await this.sendReplyToUser(text);
+        await this.sendTextMessage(text);
         return;
       } catch (err: unknown) {
         lastError = err instanceof Error ? err : new Error(String(err));

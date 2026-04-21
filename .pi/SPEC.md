@@ -593,7 +593,8 @@ export WECHAT_DEBUG="true"
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
-| v2.1 | 2026-04-17 | 修复终端消息处理时微信消息无法回复的问题：新增 isTerminalMessageProcessing 标志，终端消息处理期间微信消息进入队列等待 |
+| v2.3 | 2026-04-21 | 文字消息发送改用官方 sendMessageWeixin 模块 |
+| v2.2 | 2026-04-17 | 修复终端消息处理时微信消息无法回复的问题：新增 isTerminalMessageProcessing 标志，终端消息处理期间微信消息进入队列等待 |
 | v2.0 | 2026-04-15 | 单用户模式重构：删除多用户逻辑，简化消息格式为 `{prefix} {content}`，requestId 改为毫秒时间戳，wechat_meta 仅保留 requestId |
 | v1.6 | 2026-04-13 | 图片消息支持 |
 | v1.5 | 2026-04-12 | Typing 状态修复、模型元信息 |
