@@ -215,6 +215,59 @@ AI 调用 send_wechat_file(localPath)
 
 ---
 
+## Feature: 用官方 sendMessageWeixin 替换手动实现 (2026-04-21) ✅
+
+**目标**：用官方高层 API 替换手动构造 WeixinMessage 的代码，简化维护
+
+### 已实现功能
+
+| 功能 | 状态 |
+|------|------|
+| 删除 `sendMessageToUser` 方法 | ✅ |
+| 删除 `sendReplyToUser` 方法 | ✅ |
+| 新增 `sendTextMessage` 使用官方高层 API | ✅ |
+| 更新调用点（triggerAiInternal, handleSlashCommand, sendMessageWithRetry） | ✅ |
+| 清理未使用的 `sendMessage` import | ✅ |
+| 更新测试用例 | ✅ |
+| 修复测试 mock 配置（isDebugEnabled, sendMessageApi） | ✅ |
+
+### 技术方案
+
+```
+旧实现:
+sendReplyToUser(text)
+  → sendMessageToUser([{ type: 1, text_item: { text } }])
+      → 手动构造 WeixinMessage
+      → 调用 sendMessage API
+
+新实现:
+sendTextMessage(text)
+  → sendMessageWeixin({ to, text, opts })
+      → 官方高层函数自动处理
+```
+
+### 代码统计
+
+```
+wechat.ts  | -45 行（删除 sendMessageToUser + sendReplyToUser）
+wechat.ts  | +15 行（新增 sendTextMessage）
+────────────────────────────────────────
+Net: -30 行
+```
+
+### 修改文件
+
+- `wechat.ts` - 重构文字消息发送逻辑
+- `wechat.test.ts` - 更新测试用例
+- `storage/state-dir.ts` (新增) - 解决项目原有模块缺失
+
+### 验证
+
+- ✅ 单元测试全部通过（298 个测试）
+- ✅ 人工测试验证
+
+---
+
 ## Open Issues
 
 - [ ] Slash Command：/echo, /toggle-debug, /help
