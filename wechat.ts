@@ -14,10 +14,17 @@ import { sendMessageWeixin } from "./messaging/send.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { WeixinMessage } from "./api/types";
 import { MessageItemType } from "./api/types.js";
+import * as storage from "./storage/state.js";
 import { getUpdates, sendTyping, getConfig } from "./api/api.js";
 import type { WeixinApiOptions } from "./api/api.js";
-import { ConnectionState } from "./types.js";
-import * as storage from "./storage/state.js";
+// ============== 类型定义 ==============
+
+type ConnectionState =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "error"
+  | "needs_relogin";
 import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
