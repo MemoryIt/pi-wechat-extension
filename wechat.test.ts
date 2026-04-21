@@ -45,12 +45,15 @@ vi.mock("./config.js", () => ({
   getPrefix: () => "[wechat]",
   loadConfig: () => ({ prefix: "[wechat]", debug: false }),
   clearConfigCache: vi.fn(),
+  isDebugEnabled: () => false,
+  getMediaStoragePath: () => "/tmp/test-media",
 }));
 
 // Mock API
 vi.mock("./api/api.js", () => ({
   getUpdates: vi.fn().mockResolvedValue({ msgs: [], get_updates_buf: "" }),
   sendMessage: mockSendMessage,
+  sendMessageApi: mockSendMessage,
   sendTyping: mockSendTyping,
   getConfig: mockGetConfig,
 }));
@@ -337,13 +340,13 @@ describe("WechatEngine - Single User Version Tests", () => {
 
   // ============== 6. 消息发送测试 ==============
   
-  describe("5. sendReplyToUser (Single User)", () => {
-    it("should send reply with correct parameters", async () => {
+  describe("5. sendTextMessage (Single User)", () => {
+    it("should send text message with correct parameters", async () => {
       // 先初始化单用户
       await engine.initSingleUser();
       mockSendMessage.mockResolvedValueOnce(undefined);
 
-      await engine.sendReplyToUser("Test reply");
+      await engine.sendTextMessage("Test reply");
 
       expect(mockSendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -364,7 +367,7 @@ describe("WechatEngine - Single User Version Tests", () => {
       // 没有初始化单用户
       const freshEngine = new WechatEngine();
       
-      await expect(freshEngine.sendReplyToUser("Test")).rejects.toThrow(
+      await expect(freshEngine.sendTextMessage("Test")).rejects.toThrow(
         "Single user not initialized"
       );
     });
