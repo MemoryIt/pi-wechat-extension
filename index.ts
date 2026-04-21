@@ -2,6 +2,9 @@
  * index.ts - 微信插件入口（单用户版本）
  */
 
+import { Type } from "@sinclair/typebox";
+import path from "node:path";
+import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "./auth/login-qr.js";
@@ -31,6 +34,61 @@ export default function (pi: ExtensionAPI) {
   setPi(pi);
 
   // ============== 注册命令 ==============
+
+  // ============== 注册 Tool：允许 AI 发送文件 ==============
+  pi.registerTool({
+    name: "send_wechat_file",
+    description: "向当前微信用户发送本地文件。必须提供文件的**完整绝对路径**（如 /Users/mou/code/pi-dev/Agent.pptx）。支持任意文件类型（pptx、pdf、jpg、png 等）。",
+    parameters: Type.Object({
+      localPath: Type.String({
+        description: "必须填写：Pi 本地文件的**完整绝对路径**（例如 /Users/mou/code/pi-dev/Agent.pptx）",
+      }),
+      fileName: Type.Optional(Type.String({
+        description: "可选：发送时在微信中显示的文件名（默认使用实际文件名）",
+      })),
+    }),
+    execute: async (toolCallId: string, params: unknown, signal?: unknown, onUpdate?: unknown) => {
+      debugLog(`send_wechat_file tool called - toolCallId=${toolCallId}, params=`, JSON.stringify(params));
+
+      if (!params || typeof params !== "object") {
+        const errMsg = "工具调用参数错误：请提供 localPath 参数";
+        debugLog(errMsg);
+        return { content: [{ type: "text", text: errMsg }], isError: true };
+      }
+
+      const { localPath, fileName } = params as { localPath?: string; fileName?: string };
+
+      if (!localPath || typeof localPath !== "string" || localPath.trim() === "") {
+        const errMsg = "必须提供 localPath 参数（文件的完整绝对路径）。例如：/Users/mou/code/pi-dev/Agent.pptx";
+        debugLog(errMsg);
+        return { content: [{ type: "text", text: errMsg }], isError: true };
+      }
+
+      const trimmedPath = localPath.trim();
+      if (!existsSync(trimmedPath)) {
+        const errMsg = `文件不存在: ${trimmedPath} （请确认路径是否正确，且文件在当前工作目录或指定绝对路径下）`;
+        debugLog(errMsg);
+        return { content: [{ type: "text", text: errMsg }], isError: true };
+      }
+
+      const displayName = fileName && typeof fileName === "string" && fileName.trim() !== ""
+        ? fileName.trim()
+        : path.basename(trimmedPath);
+
+      debugLog(`准备发送文件: ${displayName} (${trimmedPath})`);
+
+      try {
+        await engine.sendFileToUser(trimmedPath, displayName);
+        const successMsg = `文件 "${displayName}" 已成功发送至微信`;
+        debugLog(successMsg);
+        return { content: [{ type: "text", text: successMsg }] };
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        debugLog(`sendFileToUser 执行失败:`, errMsg);
+        return { content: [{ type: "text", text: `发送文件失败: ${errMsg}` }], isError: true };
+      }
+    },
+  });
 
   pi.registerCommand("wechat", {
     description: "WeChat integration",

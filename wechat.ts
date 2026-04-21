@@ -8,10 +8,13 @@
  * 4. 单用户固定凭证，运行时从 storage 加载
  */
 
+import path from "node:path";
+import { sendWeixinMediaFile } from "./messaging/send-media.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { WeixinMessage } from "./api/types";
 import { MessageItemType } from "./api/types.js";
 import { getUpdates, sendMessage, sendTyping, getConfig } from "./api/api.js";
+import type { WeixinApiOptions } from "./api/api.js";
 import { ConnectionState } from "./types.js";
 import * as storage from "./storage/state.js";
 import { randomUUID } from "node:crypto";
@@ -651,12 +654,14 @@ export class WechatEngine {
   // ============== 发送消息（单用户）==============
 
   /**
-   * 发送回复给单用户
+   * 通用发送消息（支持文本、文件等多种 item_list）
    */
-  async sendReplyToUser(text: string): Promise<void> {
+  async sendMessageToUser(itemList: unknown[]): Promise<void> {
     if (!wechatConfig || !this.singleUserId || !this.singleContextToken) {
       throw new Error("Single user not initialized");
     }
+
+    debugLog(`sendMessageToUser: preparing message with ${itemList.length} item(s)`);
 
     const msg: WeixinMessage = {
       from_user_id: "",
@@ -664,15 +669,63 @@ export class WechatEngine {
       client_id: randomUUID(),
       message_type: 2,
       message_state: 2,
-      context_token: this.singleContextToken,
-      item_list: [{ type: 1, text_item: { text } }],
+      context_token: this.singleContextToken!,
+      item_list: itemList,
     };
 
+    debugLog(`sendMessageToUser: context_token length=${this.singleContextToken?.length || 0}`);
+    debugLog(`sendMessageToUser: item types=${itemList.map((i: unknown) => (i as { type?: number }).type).join(',')}`);
+    debugLog(`sendMessageToUser: calling sendMessage API...`);
     await sendMessage({
       baseUrl: wechatConfig.baseUrl,
       token: wechatConfig.token,
       body: { msg },
     });
+    debugLog(`sendMessageToUser: message sent successfully`);
+  }
+
+  /**
+   * 发送回复给单用户（保持兼容）
+   */
+  async sendReplyToUser(text: string): Promise<void> {
+    debugLog(`sendReplyToUser: text length=${text.length}`);
+    const itemList = [{ type: 1, text_item: { text } }];
+    await this.sendMessageToUser(itemList);
+  }
+
+  /**
+   * 向微信发送本地文件 —— 直接使用官方 sendWeixinMediaFile（自动路由图片/视频/文件）
+   */
+  async sendFileToUser(localPath: string, fileName?: string): Promise<void> {
+    if (!localPath || typeof localPath !== "string") {
+      throw new Error("sendFileToUser: localPath 不能为空");
+    }
+
+    if (!wechatConfig || !this.singleUserId || !this.singleContextToken) {
+      throw new Error("Single user not initialized");
+    }
+
+    const displayName = fileName || path.basename(localPath);
+    debugLog(`sendFileToUser START: localPath=${localPath}, displayName=${displayName} (使用官方 sendWeixinMediaFile)`);
+
+    const opts: WeixinApiOptions & { contextToken?: string } = {
+      baseUrl: wechatConfig.baseUrl,
+      token: wechatConfig.token,
+      contextToken: this.singleContextToken!,
+    };
+
+    const cdnBaseUrl = "https://novac2c.cdn.weixin.qq.com/c2c";
+
+    // 直接调用官方高层函数（自动处理 upload + 正确构造 item）
+    await sendWeixinMediaFile({
+      filePath: localPath,
+      to: this.singleUserId,
+      text: "",
+      opts,
+      cdnBaseUrl,
+    });
+
+    debugLog(`sendFileToUser COMPLETE: 文件 "${displayName}" 已通过官方 sendWeixinMediaFile 发送成功`);
   }
 
   /**

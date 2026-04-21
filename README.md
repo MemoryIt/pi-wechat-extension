@@ -29,6 +29,7 @@
 - **连续消息队列**：用户连发多条消息，AI 按顺序逐条回复
 - **Typing 指示器**：AI 推理时显示 "正在输入..."
 - **媒体文件支持**：接收并保存语音/图片/视频/文件，AI 可读取分析
+- **文件发送**：AI 可通过工具调用向微信用户发送本地文件（图片/视频/文档）
 - **模型元信息**：回复后追加当前目录、Git 分支、Token 使用、模型等信息
 
 ## 配置
@@ -108,6 +109,29 @@ pnpm install
 
 **媒体文件存储路径**：可通过 `config.json` 或环境变量 `WECHAT_MEDIA_PATH` 配置，默认存储在 `~/.pi/agent/wechat/media/` 目录下。
 
+### 文件发送
+
+AI 可通过 `send_wechat_file` 工具向微信用户发送本地文件：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `localPath` | string | ✅ | 文件完整绝对路径 |
+| `fileName` | string | ❌ | 微信显示的文件名 |
+
+**示例**：
+```
+请把 /Users/mou/code/pi-dev/Agent.pptx 发送给微信用户
+→ AI 调用 send_wechat_file(localPath="/Users/mou/code/pi-dev/Agent.pptx")
+→ 文件通过官方 API 上传并发送
+```
+
+**支持的自动路由**：
+- 图片文件 → `uploadFileToWeixin` + `sendImageMessageWeixin`
+- 视频文件 → `uploadVideoToWeixin` + `sendVideoMessageWeixin`
+- 其他文件 → `uploadFileAttachmentToWeixin` + `sendFileMessageWeixin`
+
+---
+
 ## 技术细节
 
 ### 单用户模式
@@ -133,6 +157,9 @@ pnpm install
 pi-wechat-extension/
 ├── index.ts              # 插件入口
 ├── wechat.ts             # 核心引擎（单用户版本）
+├── messaging/            # 消息发送封装
+│   ├── send.ts           # 发送消息（文本/图片/视频/文件）
+│   └── send-media.ts     # 媒体文件发送（自动路由）
 ├── config.ts             # 配置管理
 ├── api/                  # HTTP API
 │   ├── api.ts

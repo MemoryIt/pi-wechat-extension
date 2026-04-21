@@ -178,6 +178,43 @@ const prefix = getPrefix();  // "[wechat]"
 
 ---
 
+## Feature: 文件发送功能 (2026-04-21) ✅
+
+**目标**：允许 AI 通过工具调用向微信用户发送本地文件（图片/视频/文档）
+
+### 已实现功能
+
+| 功能 | 状态 |
+|------|------|
+| `send_wechat_file` Tool 注册 | ✅ |
+| 文件路径验证 | ✅ |
+| 官方 `sendWeixinMediaFile` 封装 | ✅ |
+| 自动路由（图片/视频/文件） | ✅ |
+| 发送文件消息 | ✅ |
+
+### 技术方案
+
+```
+AI 调用 send_wechat_file(localPath)
+  → sendWeixinMediaFile() 官方高层函数（自动路由）
+      - image/* → uploadFileToWeixin + sendImageMessageWeixin
+      - video/* → uploadVideoToWeixin + sendVideoMessageWeixin
+      - 其他   → uploadFileAttachmentToWeixin + sendFileMessageWeixin
+```
+
+### 修复历史
+
+| 日期 | 问题 | 解决方案 |
+|------|------|----------|
+| 2026-04-21 | 手动构造 `file_item` 导致微信端无法下载 | 改用官方 `sendWeixinMediaFile` |
+
+### 修改文件
+
+- `index.ts` - 新增 `send_wechat_file` Tool (60 行)
+- `wechat.ts` - 重构 `sendFileToUser()` 使用官方 `sendWeixinMediaFile`
+
+---
+
 ## Open Issues
 
 - [ ] Slash Command：/echo, /toggle-debug, /help
