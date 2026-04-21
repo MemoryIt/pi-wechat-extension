@@ -252,7 +252,7 @@ export default function (pi: ExtensionAPI) {
       debugLog(`Request ${requestId} already processed, skipping`);
       return;
     }
-    engine.markRequestProcessed(requestId);
+    // engine.markRequestProcessed(requestId);
 
     // 提取 AI 回复（最后一条有内容的 assistant 消息）
     const assistantMessages = eventObj.messages?.filter?.((m: unknown) => {
@@ -271,6 +271,7 @@ export default function (pi: ExtensionAPI) {
       engine.onAiDone();
       return;
     }
+    engine.markRequestProcessed(requestId);
 
     debugLog(`Sending reply: ${replyText.slice(0, 50)}...`);
 
