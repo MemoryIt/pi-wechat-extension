@@ -6,33 +6,83 @@
 
 | 项目 | 版本 |
 |------|------|
-| pi | 0.65.2 |
+| pi | 0.65.2+ |
+| Node.js | >= 22 |
 
 ## 已实现功能
 
-### 命令
+| 功能 | 说明 | 状态 |
+|------|------|------|
+| **登录及持久化** | 扫码一次，登录信息持久化保存，下次自动连接 | ✅ |
+| **双向消息发送** | 微信发消息 → pi 终端显示；AI 回复 → 微信收到 | ✅ |
+| **运行信息追加** | 文本消息后追加：所在目录、Git 分支、Token 使用、模型信息 | ✅ |
+
+## 快速开始
+
+### 1. 安装及卸载
+
+```bash
+# 推荐安装到某个本地项目（而非全局）
+# 进入你的项目目录
+cd /path/to/your-project
+# 安装到项目级别（关键是加上 -l 或 --local 参数）
+pi install -l git:github.com/MemoryIt/pi-wechat-extension
+# 验证安装是否成功
+# 在项目目录下运行：
+pi list
+# 应该能看到类似输出：
+# Project packages:
+#     git:github.com/MemoryIt/pi-wechat-extension
+# 卸载项目级安装的扩展（推荐方式）
+pi remove -l git:github.com/MemoryIt/pi-wechat-extension
+# 或者使用别名（完全等效）
+pi uninstall -l git:github.com/MemoryIt/pi-wechat-extension
+```
+
+### 2. 登录微信
+
+```
+/wechat login
+```
+
+终端会显示二维码，使用微信扫描完成登录。
+
+### 3. 开始聊天
+
+登录后自动连接微信。直接通过微信给 bot 发消息，查看AI回复。
+
+## 终端命令
 
 | 命令 | 功能 |
 |------|------|
 | `/wechat login` | 扫码登录微信 |
-| `/wechat logout` | 登出微信 |
+| `/wechat logout` | 登出微信并清除凭证 |
 | `/wechat status` | 查看连接状态 |
 | `/wechat start` | 手动启动轮询 |
 | `/wechat stop` | 手动停止轮询 |
 
-### 核心功能
+### 文件发送工具
 
-- **扫码登录**：扫码一次，登录信息持久化保存，下次打开无需扫码
-- **消息接收**：微信发消息 → pi 终端显示
-- **消息回复**：AI 在终端回复 → 微信端收到回复（**双向交互**）
-- **长轮询**：实时接收微信消息
-- **连续消息队列**：用户连发多条消息，AI 按顺序逐条回复
-- **Typing 指示器**：AI 推理时显示 "正在输入..."
-- **媒体文件支持**：接收并保存语音/图片/视频/文件，AI 可读取分析
-- **文件发送**：AI 可通过工具调用向微信用户发送本地文件（图片/视频/文档）
-- **模型元信息**：回复后追加当前目录、Git 分支、Token 使用、模型等信息
+pi 可通过 `send_wechat_file` 工具向微信用户发送本地文件：
 
-## 配置
+```typescript
+// Tool 定义
+{
+  name: "send_wechat_file",
+  description: "向当前微信用户发送本地文件。必须提供文件的完整绝对路径。",
+  parameters: {
+    localPath: string,  // 必填，文件完整绝对路径
+    fileName: string    // 可选，微信显示的文件名
+  }
+}
+```
+
+**使用示例**：
+```
+请把 /Users/mou/code/pi-dev/sample.txt 发送给微信用户
+```
+
+## 配置说明
 
 ### 配置文件
 
@@ -40,7 +90,6 @@
 
 ```json
 {
-  "prefix": "[wechat]",
   "debug": false,
   "mediaStoragePath": "/custom/path/to/media"
 }
@@ -50,7 +99,6 @@
 
 | 变量名 | 说明 |
 |--------|------|
-| `WECHAT_PREFIX` | 消息前缀 |
 | `WECHAT_DEBUG` | 调试模式 (`true`/`false`) |
 | `WECHAT_MEDIA_PATH` | 媒体文件存储路径 |
 
@@ -58,7 +106,6 @@
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `prefix` | string | `[wechat]` | 消息前缀 |
 | `debug` | boolean | `false` | 调试模式 |
 | `mediaStoragePath` | string | `{agentDir}/wechat/media` | 媒体文件存储路径 |
 
@@ -67,183 +114,120 @@
 ## 工作流程
 
 ```
-微信发消息 → pi 收到消息 → pi 终端显示 → AI 在终端回复 → 微信端收到回复
+微信发消息 → 长轮询接收 → 消息格式化 → pi.sendUserMessage()
+    ↓
+AI 在终端生成回复
+    ↓
+message_start → Typing Keepalive (每8秒刷新)
+    ↓
+message_end → 停止 Typing
+    ↓
+agent_end → 提取回复 → 发送至微信
 ```
 
-## 快速开始
 
-### 1. 安装插件
-
-将项目链接添加到 pi 扩展配置。
-
-### 2. 安装依赖
-
-```bash
-npm install
-# 或
-pnpm install
-```
-
-### 3. 登录微信
-
-```
-/wechat login
-```
-扫描二维码完成登录。
-
-### 4. 开始聊天
-
-登录后自动连接微信。直接通过微信给 bot 发消息，在 **pi 终端**中查看 AI 回复。
-
-## 消息格式
-
-微信消息在 pi 会话中显示为：
-
-```
-[wechat] 你好，我想问问项目进度
-[wechat] 媒体文件已收到，成功保存到 /path/to/image.jpg
-[wechat] 媒体文件已收到，成功保存到 /path/to/audio.silk
-[wechat] 媒体文件已收到，成功保存到 /path/to/document.pdf
-[wechat] 媒体文件已收到，成功保存到 /path/to/video.mp4
-```
-
-**媒体文件存储路径**：可通过 `config.json` 或环境变量 `WECHAT_MEDIA_PATH` 配置，默认存储在 `~/.pi/agent/wechat/media/` 目录下。
-
-### 文件发送
-
-AI 可通过 `send_wechat_file` 工具向微信用户发送本地文件：
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `localPath` | string | ✅ | 文件完整绝对路径 |
-| `fileName` | string | ❌ | 微信显示的文件名 |
-
-**示例**：
-```
-请把 /Users/mou/code/pi-dev/Agent.pptx 发送给微信用户
-→ AI 调用 send_wechat_file(localPath="/Users/mou/code/pi-dev/Agent.pptx")
-→ 文件通过官方 API 上传并发送
-```
-
-**支持的自动路由**：
-- 图片文件 → `uploadFileToWeixin` + `sendImageMessageWeixin`
-- 视频文件 → `uploadVideoToWeixin` + `sendVideoMessageWeixin`
-- 其他文件 → `uploadFileAttachmentToWeixin` + `sendFileMessageWeixin`
-
----
 
 ## 技术细节
 
 ### 单用户模式
 
-插件仅支持单用户模式，简化了多用户场景下的复杂逻辑。
+插件采用单用户模式设计，简化了多用户场景下的复杂逻辑：
+
+- **固定凭证**：运行时从存储加载唯一账号的登录凭证
+- **单队列机制**：消息按接收顺序排队处理
+- **requestId 格式**：毫秒级时间戳 `YYMMDDHHMMSSmmm`（17位）
 
 ### 持久化存储
 
 ```
 ~/.pi/agent/wechat/
-├── accounts.json           # 账号索引
-├── config.json             # 插件配置
+├── accounts.json              # 账号索引
+├── config.json                # 插件配置
 └── accounts/
     └── {accountId}/
-        ├── token.json           # 登录凭证
-        ├── context-tokens.json   # 用户上下文 tokens
-        └── sync.json            # 轮询 sync cursor
+        ├── token.json              # 登录凭证 (chmod 600)
+        ├── context-tokens.json     # 用户上下文 tokens
+        └── sync.json               # 轮询 sync cursor
 ```
+
+### 媒体存储结构
+
+```
+{mediaStoragePath}/
+└── {YY}{WW}/                    # ISO 周文件夹 (如 "2604")
+    └── {timestamp}_{uuid8}.{ext}  # 文件 (如 "260421141030123_a1b2c3d4.jpg")
+```
+
+### Typing 机制
+
+- `message_start` → 发送 `typing=1` + 启动 8 秒间隔 keepalive
+- `message_end` → 停止 keepalive
+- `typing_ticket`：从 `getConfig` API 获取，60 秒缓存
+
+### 消息队列机制
+
+```
+微信消息到达
+    ↓
+AI 空闲？ → 否 → 加入 pendingMessages 队列
+    ↓ 是
+triggerAiInternal → sendUserMessage → AI 生成回复
+    ↓
+agent_end → sendMessageWithRetry → 发送至微信
+    ↓
+onAiDone → 检查队列 → 触发下一条
+```
+
+**防重机制**：
+- `processedRequests` Map 记录已处理的 requestId
+- 每 50 次请求清理一次过期记录（1 小时前）
+- `safelyTriggerNext` 支持最多 3 次重试，指数退避
 
 ## 项目结构
 
 ```
 pi-wechat-extension/
-├── index.ts              # 插件入口
-├── wechat.ts             # 核心引擎（单用户版本）
-├── messaging/            # 消息发送封装
-│   ├── send.ts           # 发送消息（文本/图片/视频/文件）
-│   └── send-media.ts     # 媒体文件发送（自动路由）
-├── config.ts             # 配置管理
-├── api/                  # HTTP API
-│   ├── api.ts
-│   ├── types.ts
-│   └── session-guard.ts
-├── auth/
-│   └── login-qr.ts       # 扫码登录
-├── media/
-│   └── media-download.ts
+├── index.ts                    # 插件入口
+├── wechat.ts                   # 核心引擎，单用户模式实现
+├── config.ts                   # 配置管理
+│
+├── api/                        # HTTP API（来自 Tencent/openclaw-weixin）
+│   ├── api.ts                  # 底层请求封装
+│   └── types.ts                # API 类型定义
+│
+├── auth/                       # 认证模块（来自 Tencent/openclaw-weixin）
+│   ├── login-qr.ts             # 扫码登录
+│   └── accounts.ts             # 账号配置
+│
+├── cdn/                        # CDN 模块（来自 Tencent/openclaw-weixin）
+│   ├── cdn-url.ts
+│   ├── cdn-upload.ts
+│   ├── upload.ts               # 文件上传封装
+│   ├── aes-ecb.ts              # AES-128-ECB 加密
+│   └── pic-decrypt.ts          # CDN 内容解密
+│
+├── media/                      # 媒体处理（来自 Tencent/openclaw-weixin）
+│   ├── media-download.ts       # 媒体下载与解密
+│   ├── silk-transcode.ts       # SILK 转 WAV
+│   └── mime.ts                 # MIME 类型检测
+│
+├── messaging/                  # 消息发送（来自 Tencent/openclaw-weixin）
+│   ├── send.ts                 # 文字/图片/视频/文件发送
+│   ├── send-media.ts           # 文件发送自动路由
+│   ├── inbound.ts              # 入站消息处理
+│   └── markdown-filter.ts      # Markdown 过滤
+│
 ├── storage/
-│   └── state.ts          # 持久化存储
-├── util/
-│   ├── logger.ts
-│   └── redact.ts
-├── types.ts
-├── config.test.ts        # 配置测试
-├── wechat.test.ts        # 引擎测试
+│   ├── state.ts                # 持久化存储 + 单用户便捷函数
+│   └── state-dir.ts            # 存储目录解析
+│
+├── util/                       # 工具模块（来自 Tencent/openclaw-weixin）
+│   ├── logger.ts               # 日志记录
+│   ├── redact.ts               # 敏感信息脱敏
+│   └── random.ts               # 随机 ID 生成
+│
 └── package.json
 ```
 
-## 开发
+> **说明**：根目录下的 `index.ts`、`wechat.ts`、`config.ts` 和 `storage/state.ts` 是本插件的核心文件，其余模块均从 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin) 项目适配。
 
-### 构建
-
-```bash
-pnpm install
-pnpm build
-```
-
-### 测试
-
-项目使用 [Vitest](https://vitest.dev/) 作为测试框架。
-
-#### 运行测试
-
-```bash
-# 运行所有测试（一次性）
-pnpm test
-
-# 监听模式（文件变化时自动重新运行）
-pnpm test --watch
-
-# 运行特定测试文件
-pnpm test -- wechat.test.ts
-pnpm test -- config.test.ts
-pnpm test -- storage/storage.test.ts
-
-# 显示测试覆盖率
-pnpm test -- --coverage
-```
-
-#### 测试文件
-
-| 文件 | 说明 |
-|------|------|
-| `config.test.ts` | 配置管理测试（前缀、默认值、覆盖、环境变量） |
-| `wechat.test.ts` | 核心引擎测试（requestId、消息格式化、队列、Typing、发送、防重） |
-| `storage/storage.test.ts` | 存储模块测试（持久化函数存在性检查） |
-
-#### 测试覆盖模块
-
-| 模块 | 测试内容 |
-|------|----------|
-| **requestId 生成** | 格式验证、唯一性、时间戳精度 |
-| **消息格式化** | 文本消息、图片消息、混合内容、空内容 |
-| **单用户初始化** | 凭证加载、contextToken 缺失警告 |
-| **消息队列** | 入队、出队、并发处理 |
-| **Typing Keepalive** | 启动、停止、ticket 缓存、错误恢复 |
-| **消息发送** | 单用户回复、重试机制、防重检查 |
-| **状态重置** | 全局状态清理 |
-| **消息处理流程** | slash command 检测、contextToken 更新 |
-
-#### 测试用例统计
-
-```
-config.test.ts         : 10 个测试用例
-wechat.test.ts         : 23 个测试用例
-storage/storage.test.ts :  9 个测试用例
-────────────────────────────────────────
-总计                    : 42 个测试用例
-```
-
-### 类型检查
-
-```bash
-pnpm typecheck
-```
