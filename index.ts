@@ -6,9 +6,8 @@ import { Type } from "@sinclair/typebox";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "./auth/login-qr.js";
-import { saveToken, upsertAccount, deleteToken, deleteAccountData, removeAccount, getDefaultAccountToken } from "./storage/state.js";
+import { saveToken, upsertAccount, deleteAccountData, removeAccount, getDefaultAccountToken } from "./storage/state.js";
 import { engine, setPi, setConfig } from "./wechat.js";
 import { isDebugEnabled } from "./config.js";
 
