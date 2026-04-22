@@ -1,3 +1,4 @@
+https://github.com/user-attachments/assets/fdaf0e09-9fa5-491d-8507-464b0a5ec16d
 # pi-wechat-extension
 
 微信插件，将微信接入 pi coding agent，实现"微信聊天 → AI 回复"的双向交互。
@@ -16,6 +17,9 @@
 | **登录及持久化** | 扫码一次，登录信息持久化保存，下次自动连接 | ✅ |
 | **双向消息发送** | 微信发消息 → pi 终端显示；AI 回复 → 微信收到 | ✅ |
 | **运行信息追加** | 文本消息后追加：所在目录、Git 分支、Token 使用、模型信息 | ✅ |
+
+
+
 
 ## 快速开始
 
