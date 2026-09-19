@@ -75,3 +75,36 @@ export class TurnQueue<T = unknown> {
     this.cleanupCounter = 0;
   }
 }
+
+/**
+ * SerialTaskQueue - 串行后台任务队列
+ *
+ * 用 promise 链实现：后一个 task 必须等前一个 task settle 后才开始。
+ * task 抛错时调用 onError，并且不阻断后续任务（链保持 resolved）。
+ */
+export class SerialTaskQueue {
+  private tail: Promise<void> = Promise.resolve();
+  private pending = 0;
+
+  constructor(private onError: (err: unknown) => void) {}
+
+  enqueue(task: () => Promise<void>): void {
+    this.pending += 1;
+    this.tail = this.tail
+      .then(() => task())
+      .catch((err) => {
+        try {
+          this.onError(err);
+        } catch {
+          // onError 自身抛错也不能阻断后续任务
+        }
+      })
+      .finally(() => {
+        this.pending -= 1;
+      });
+  }
+
+  get idle(): boolean {
+    return this.pending === 0;
+  }
+}

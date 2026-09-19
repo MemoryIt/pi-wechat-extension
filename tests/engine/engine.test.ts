@@ -19,7 +19,9 @@ import {
   createEnginePi,
   resetBoundaryMocks,
   apiMock,
+  sendMock,
   sendMediaMock,
+  mediaMock,
   opts,
   textMessage,
   seedSingleUser,
@@ -391,4 +393,77 @@ test("B6 目标：终端处理期间连发消息按序排队，排空后 request
   expect(requestIds).toEqual(["r1", "r2", "r3"]);
   expect(contents).toEqual(["m1", "m2", "m3"]);
   expect(e.queue.size).toBe(0);
+});
+
+// ---------------------------------------------------------------------------
+// B5：媒体消息快速 ack + 后台串行下载，不阻塞轮询主循环
+// ---------------------------------------------------------------------------
+
+function mediaMessage(contextToken = "CTX-1") {
+  return { context_token: contextToken, item_list: [{ type: 2, image_item: {} }] };
+}
+
+test("B5 目标：媒体消息立即 ack（不含路径），下载未完成不写 history", async () => {
+  await engine.initSingleUser();
+  engine.setHost(pi as never);
+
+  let release!: (v: unknown) => void;
+  const gate = new Promise<unknown>((res) => {
+    release = res;
+  });
+  mediaMock.downloadMediaFromItem.mockImplementation(async () => {
+    await gate;
+    return { decryptedPicPath: "/tmp/media/2601/pic.png" };
+  });
+
+  await engine.handleMessage(mediaMessage(), opts);
+
+  // ack 已发出，且不含保存路径
+  expect(sendMock.sendMessageWeixin).toHaveBeenCalledTimes(1);
+  const ack = sendMock.sendMessageWeixin.mock.calls[0][0] as { text: string };
+  expect(ack.text).toContain("媒体文件已收到");
+  expect(ack.text).not.toContain("/tmp/media");
+
+  // 下载尚未完成：history 未写，且未占用 AI 忙闲标记（不阻塞轮询）
+  expect(pi.calls.sendMessage.length).toBe(0);
+  expect((engine as unknown as AnyEngine).queue.isBusy()).toBe(false);
+
+  release(undefined);
+  await waitFor(() => pi.calls.sendMessage.length > 0);
+
+  const historyMsg = pi.calls.sendMessage[0][0] as {
+    customType: string;
+    content: string;
+    display: boolean;
+  };
+  expect(historyMsg.customType).toBe("wechat_media");
+  expect(historyMsg.display).toBe(false);
+  expect(historyMsg.content).toContain("/tmp/media/2601/pic.png");
+  expect(pi.calls.sendMessage[0][1]).toEqual({ triggerTurn: false, deliverAs: "followUp" });
+});
+
+test("B5 目标：后台媒体任务串行，第 2 条等第 1 条 resolve 后才启动", async () => {
+  await engine.initSingleUser();
+  engine.setHost(pi as never);
+
+  const resolvers: Array<(v: unknown) => void> = [];
+  mediaMock.downloadMediaFromItem.mockImplementation(
+    () => new Promise((res) => resolvers.push(res)),
+  );
+
+  await engine.handleMessage(mediaMessage(), opts);
+  await engine.handleMessage(mediaMessage(), opts);
+
+  // 第 2 条下载尚未启动（串行）
+  expect(mediaMock.downloadMediaFromItem).toHaveBeenCalledTimes(1);
+
+  resolvers[0]({ decryptedPicPath: "/tmp/media/1.png" });
+  await waitFor(() => mediaMock.downloadMediaFromItem.mock.calls.length >= 2);
+
+  resolvers[1]({ decryptedPicPath: "/tmp/media/2.png" });
+  await waitFor(() => pi.calls.sendMessage.length >= 2);
+
+  const contents = pi.calls.sendMessage.map(([m]) => (m as { content: string }).content);
+  expect(contents[0]).toContain("/tmp/media/1.png");
+  expect(contents[1]).toContain("/tmp/media/2.png");
 });
