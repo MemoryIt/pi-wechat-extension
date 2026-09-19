@@ -21,6 +21,7 @@ import { TurnQueue, SerialTaskQueue } from "./queue.js";
 import { TypingController } from "./typing.js";
 import type { TypingCredentials } from "./typing.js";
 import { MessageSender } from "./sender.js";
+import { MessageRouter } from "./router.js";
 import { createLogger } from "./logger.js";
 
 // 保持对外导出兼容（ConnectionState 现已迁至 polling.ts）
@@ -108,6 +109,9 @@ export class WechatEngine {
     error: this.logger.error.bind(this.logger),
   });
 
+  // === 消息路由（turn 执行 + 队列排空）===
+  private router: MessageRouter;
+
   // === 注入依赖（host / config）===
   private host: WechatHost | null = null;
   private config: WechatConfig | null = null;
@@ -116,6 +120,16 @@ export class WechatEngine {
   private notifier: ((message: string, type?: "info" | "warning" | "error") => void) | null = null;
 
   constructor() {
+    this.router = new MessageRouter({
+      queue: this.queue,
+      mediaStore: this.mediaStore,
+      mediaQueue: this.mediaQueue,
+      sender: this.sender,
+      getHost: () => this.host,
+      getOpts: () => this.getCurrentOpts(),
+      logger: this.logger,
+    });
+
     this.poller = new PollingLoop({
       ensureSession: () => this.initSingleUser(),
       getAccountId: () => this.accountId,
@@ -252,102 +266,7 @@ export class WechatEngine {
       return;
     }
 
-    await this.triggerAiInternal(msg, requestId, opts);
-  }
-
-  /**
-   * 内部方法：触发 AI 处理
-   */
-  private async triggerAiInternal(msg: WeixinMessage, requestId: string, opts: { baseUrl: string; token: string }): Promise<void> {
-    // === 媒体消息处理 ===
-    const hasText = msg.item_list?.some(item => item.type === MessageItemType.TEXT && item.text_item?.text?.trim());
-    const hasMedia = msg.item_list?.some(item => item.type !== MessageItemType.TEXT);
-
-    if (hasMedia && !hasText) {
-      this.logger.debug(`Media message detected, acknowledging and processing in background...`);
-
-      // B5：立即 ack（不含路径），下载/落盘放到后台串行队列，不阻塞轮询主循环。
-      await this.sendTextMessage("媒体文件已收到，正在保存…");
-
-      this.mediaQueue.enqueue(() => this.processMediaInBackground(msg, requestId, opts));
-
-      // 标记处理完成并退出
-      this.markRequestProcessed(requestId);
-
-      // 处理队列中的下一条
-      if (this.queue.size > 0) {
-        this.safelyTriggerNext();
-      }
-      return;
-    }
-
-    // === 文本消息处理 ===
-    this.queue.setCurrentRequestId(requestId);
-    this.queue.setBusy(true);
-    let handedOffToAgent = false;
-
-    try {
-      const host = this.host;
-      if (!host) throw new Error("WechatHost not configured");
-
-      this.logger.debug(`triggerAi: requestId=${requestId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
-
-      // 写入 wechat_meta（仅 requestId）—— pi 调用可能同步抛错
-      host.appendEntry("wechat_meta", { requestId });
-
-      // 直接获取文本内容
-      const textParts: string[] = [];
-      for (const item of msg.item_list ?? []) {
-        if (item.type === MessageItemType.TEXT) {
-          textParts.push(item.text_item?.text ?? "");
-        }
-      }
-      const content = textParts.join("\n");
-
-      // sendUserMessage 为同步 void：同步抛错必须在这里被捕获，不得冒泡成「轮询失败」
-      host.sendUserMessage(content, { deliverAs: "followUp" });
-      handedOffToAgent = true;
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`triggerAiInternal failed (requestId=${requestId}):`, errMsg);
-      this.markRequestProcessed(requestId);
-    } finally {
-      // 错误路径：无论从哪个 await 抛出都必须释放处理锁并继续排空队列。
-      // 成功路径保持 isAiProcessing=true，等待 onAiDone() 通知本轮结束。
-      if (!handedOffToAgent) {
-        this.queue.setBusy(false);
-        this.queue.setCurrentRequestId(null);
-        if (this.queue.size > 0) {
-          void this.safelyTriggerNext();
-        }
-      }
-    }
-  }
-
-  /**
-   * B5：后台串行处理媒体下载/落盘，完成后写入会话历史（含保存路径）。
-   * 外层 try/catch 保证不向调用方抛出。
-   */
-  private async processMediaInBackground(
-    msg: WeixinMessage,
-    requestId: string,
-    opts: { baseUrl: string; token: string },
-  ): Promise<void> {
-    try {
-      const paths = await this.mediaStore.downloadAll(msg.item_list ?? [], opts.baseUrl);
-
-      if (paths.length > 0) {
-        const host = this.host;
-        if (!host) throw new Error("WechatHost not configured");
-
-        host.sendMessage(
-          { customType: "wechat_media", content: `媒体文件已保存到 ${paths[0]}`, display: false },
-          { triggerTurn: false, deliverAs: "followUp" },
-        );
-      }
-    } catch (err) {
-      this.logger.error(`processMediaInBackground failed (requestId=${requestId}):`, err);
-    }
+    await this.router.execute(msg, requestId, opts);
   }
 
   /**
@@ -395,44 +314,7 @@ export class WechatEngine {
 
     // 处理队列中的下一条
     if (this.queue.size > 0) {
-      this.safelyTriggerNext();
-    }
-  }
-
-  /**
-   * 安全地触发下一条消息
-   *
-   * 必须 await 并 catch triggerAiInternal，否则排空时的 rejection 会变成未处理
-   * 拒绝并卡死 isAiProcessing。移除了基于错误字符串匹配的重试，避免无限递归。
-   */
-  private async safelyTriggerNext(): Promise<void> {
-    const BASE_DELAY = 20;
-    await this.sleep(BASE_DELAY);
-
-    if (this.queue.size === 0) {
-      this.queue.setBusy(false);
-      return;
-    }
-
-    const { msg, requestId } = this.queue.dequeue()!;
-    this.logger.debug(`Triggering next message (queue size: ${this.queue.size})`);
-
-    const opts = this.getCurrentOpts();
-    if (!opts) {
-      this.logger.error("Failed to process queued message: engine config missing");
-      this.queue.setBusy(false);
-      if (this.queue.size > 0) void this.safelyTriggerNext();
-      return;
-    }
-
-    try {
-      await this.triggerAiInternal(msg, requestId, opts);
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Failed to process queued message: ${errMsg}`);
-      this.queue.setBusy(false);
-      this.queue.setCurrentRequestId(null);
-      if (this.queue.size > 0) void this.safelyTriggerNext();
+      void this.router.drain();
     }
   }
 

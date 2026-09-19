@@ -269,7 +269,7 @@ test("D16b 目标：typing keepalive 的 interval 应调用 unref", async () => 
 });
 
 // ---------------------------------------------------------------------------
-// D7：队列排空时 triggerAiInternal 的 rejection 未被引擎 await/catch
+// D7：队列排空时 execute 的 rejection 未被引擎 await/catch
 // ---------------------------------------------------------------------------
 
 /**
@@ -279,14 +279,15 @@ test("D16b 目标：typing keepalive 的 interval 应调用 unref", async () => 
  */
 function wrapTriggerToObserveRejection(captured: unknown[]): () => void {
   const e = engine as unknown as AnyEngine;
-  const original = e.triggerAiInternal.bind(engine);
-  e.triggerAiInternal = (msg: unknown, requestId: string, o: unknown) => {
+  const router = e.router as { execute: (msg: unknown, requestId: string, o: unknown) => Promise<void> };
+  const original = router.execute.bind(router);
+  router.execute = (msg: unknown, requestId: string, o: unknown) => {
     const p = original(msg, requestId, o) as Promise<void>;
     p.catch((err) => captured.push(err));
     return p;
   };
   return () => {
-    delete e.triggerAiInternal;
+    delete (router as Record<string, unknown>).execute;
   };
 }
 
