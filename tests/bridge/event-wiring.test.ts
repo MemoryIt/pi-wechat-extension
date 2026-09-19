@@ -36,7 +36,7 @@ const engine = createBridgeEngine();
 installBridgeMocks(engine);
 
 const register = await loadIndex();
-const storage = await import("../../storage/state.js");
+const storage = await import("../../src/storage/state.js");
 
 const { api, handlers, commands } = createFakePi();
 register(api);

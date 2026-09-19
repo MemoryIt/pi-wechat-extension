@@ -13,7 +13,7 @@ import { installBaseMocks, agentDir, resetAgentDir } from "../setup/mocks";
 
 installBaseMocks();
 
-const config = await import("../../config.js");
+const config = await import("../../src/config.js");
 
 const CONFIG_FILE = join(agentDir.value, "wechat", "config.json");
 

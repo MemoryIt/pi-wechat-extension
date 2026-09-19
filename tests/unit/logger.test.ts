@@ -5,7 +5,7 @@
  * 使用注入的 sink 捕获输出，不污染真实 console。
  */
 import { test, expect } from "bun:test";
-import { createLogger, redactToken, redactBody, redactUrl } from "../../logger.js";
+import { createLogger, redactToken, redactBody, redactUrl } from "../../src/logger.js";
 
 interface Captured {
   log: unknown[][];

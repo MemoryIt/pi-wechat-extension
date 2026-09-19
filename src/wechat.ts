@@ -9,8 +9,8 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { WeixinMessage } from "./api/types";
-import { MessageItemType } from "./api/types.js";
+import type { WeixinMessage } from "../api/types";
+import { MessageItemType } from "../api/types.js";
 import * as storage from "./storage/state.js";
 import { isDebugEnabled } from "./config.js";
 import { MediaStore } from "./media-store.js";

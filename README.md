@@ -217,16 +217,20 @@ onAiDone → 检查队列 → 触发下一条
 
 ```
 pi-wechat-extension/
-├── index.ts                    # 插件入口（事件桥接 / 命令 / 工具）
-├── wechat.ts                   # 引擎门面（单用户模式）
-├── polling.ts                  # PollingLoop：长轮询 / 退避 / abort
-├── queue.ts                    # TurnQueue + SerialTaskQueue
-├── media-store.ts              # 媒体落盘 / 魔数识别 / 下载
-├── typing.ts                   # TypingController
-├── sender.ts                   # MessageSender
-├── logger.ts                   # 统一日志 + 脱敏
-├── time.ts                     # 共享时间戳
-├── config.ts                   # 配置管理
+├── src/                        # 自写核心模块
+│   ├── index.ts                # 插件入口（事件桥接 / 命令 / 工具）
+│   ├── wechat.ts               # 引擎门面（单用户模式）
+│   ├── polling.ts              # PollingLoop：长轮询 / 退避 / abort
+│   ├── queue.ts                # TurnQueue + SerialTaskQueue
+│   ├── media-store.ts          # 媒体落盘 / 魔数识别 / 下载
+│   ├── typing.ts               # TypingController
+│   ├── sender.ts               # MessageSender
+│   ├── logger.ts               # 统一日志 + 脱敏
+│   ├── time.ts                 # 共享时间戳
+│   ├── config.ts               # 配置管理
+│   └── storage/
+│       ├── state.ts            # 持久化存储 + 单用户便捷函数
+│       └── state-dir.ts        # 状态目录解析
 │
 ├── api/                        # HTTP API（来自 Tencent/openclaw-weixin）
 │   ├── api.ts                  # 底层请求封装
@@ -254,9 +258,6 @@ pi-wechat-extension/
 │   ├── inbound.ts              # 入站消息处理
 │   └── markdown-filter.ts      # Markdown 过滤
 │
-├── storage/
-│   └── state.ts                # 持久化存储 + 单用户便捷函数
-│
 ├── util/                       # 工具模块（来自 Tencent/openclaw-weixin）
 │   ├── logger.ts               # 文件日志（JSON lines）
 │   ├── redact.ts               # 敏感信息脱敏
@@ -271,5 +272,5 @@ pi-wechat-extension/
 └── package.json
 ```
 
-> **说明**：根目录下的 `index.ts`、`wechat.ts` 及其拆分出的协作模块（`polling.ts`、`queue.ts`、`media-store.ts`、`typing.ts`、`sender.ts`、`logger.ts`、`time.ts`）、`config.ts`、`storage/state.ts` 是本插件自写的核心代码；`api/`、`auth/`、`cdn/`、`media/`、`messaging/`、`util/` 适配自 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)。
+> **说明**：`src/` 下的 `index.ts`、`wechat.ts` 及其拆分出的协作模块（`polling.ts`、`queue.ts`、`media-store.ts`、`typing.ts`、`sender.ts`、`logger.ts`、`time.ts`）、`config.ts`、`storage/state.ts` 是本插件自写的核心代码；`api/`、`auth/`、`cdn/`、`media/`、`messaging/`、`util/` 适配自 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)。
 

@@ -11,7 +11,7 @@ import { installBaseMocks, agentDir, resetAgentDir, wechatDataDir } from "../set
 
 installBaseMocks();
 
-const storage = await import("../../storage/state.js");
+const storage = await import("../../src/storage/state.js");
 
 function tokenFixture(overrides: Record<string, unknown> = {}) {
   return {
