@@ -56,20 +56,7 @@ test("基线：损坏的 JSON 返回 null 而不是抛错", async () => {
 // D12：并发 saveContextToken 的 read-modify-write 丢写
 // ---------------------------------------------------------------------------
 
-test("D12 证伪：并发写入不同用户的 contextToken 会丢失其中一条", async () => {
-  await storage.saveContextToken("acc1", "u1", { displayName: "u1", contextToken: "t1" });
-
-  await Promise.all([
-    storage.saveContextToken("acc1", "u2", { displayName: "u2", contextToken: "t2" }),
-    storage.saveContextToken("acc1", "u3", { displayName: "u3", contextToken: "t3" }),
-  ]);
-
-  const tokens = await storage.loadContextTokens("acc1");
-  // 旧行为：u2/u3 各读到 {u1}，后写覆盖前写，最终只保留 u1 + 其中一条。
-  expect(Object.keys(tokens).length).toBe(2);
-});
-
-test.failing("D12 目标：并发写入不同用户的 contextToken 不应丢写", async () => {
+test("D12 目标：并发写入不同用户的 contextToken 不应丢写", async () => {
   await storage.saveContextToken("acc1", "u1", { displayName: "u1", contextToken: "t1" });
 
   await Promise.all([
@@ -85,18 +72,7 @@ test.failing("D12 目标：并发写入不同用户的 contextToken 不应丢写
 // D10：getSingleUserContextToken 未绑定 token.userId，返回了错误用户
 // ---------------------------------------------------------------------------
 
-test("D10 证伪：getSingleUserContextToken 返回了非 token.userId 的用户 token", async () => {
-  await storage.saveToken("acc1", tokenFixture({ userId: "U1" }));
-  await storage.upsertAccount({ accountId: "acc1", displayName: "微信账号", loginAt: Date.now() });
-
-  // 故意先写 U2，使 Object.keys 顺序为 U2, U1。
-  await storage.saveContextToken("acc1", "U2", { displayName: "U2", contextToken: "TOK-U2" });
-  await storage.saveContextToken("acc1", "U1", { displayName: "U1", contextToken: "TOK-U1" });
-
-  expect(await storage.getSingleUserContextToken()).toBe("TOK-U2");
-});
-
-test.failing("D10 目标：getSingleUserContextToken 应返回 token.userId 对应的 token", async () => {
+test("D10 目标：getSingleUserContextToken 应返回 token.userId 对应的 token", async () => {
   await storage.saveToken("acc1", tokenFixture({ userId: "U1" }));
   await storage.upsertAccount({ accountId: "acc1", displayName: "微信账号", loginAt: Date.now() });
 
