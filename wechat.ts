@@ -21,17 +21,10 @@ import { TurnQueue, SerialTaskQueue } from "./queue.js";
 import { TypingController } from "./typing.js";
 import type { TypingCredentials } from "./typing.js";
 import { MessageSender } from "./sender.js";
+import { createLogger } from "./logger.js";
 
 // 保持对外导出兼容（ConnectionState 现已迁至 polling.ts）
 export type { ConnectionState } from "./polling.js";
-
-// ============== 调试日志辅助函数 ==============
-
-function debugLog(message: string, ...args: unknown[]): void {
-  if (isDebugEnabled()) {
-    console.log(`[Wechat] ${message}`, ...args);
-  }
-}
 
 // ============== 宿主依赖（依赖注入）==============
 
@@ -72,6 +65,9 @@ export function setConfig(config: WechatConfig): void {
 // ============== WechatEngine（单用户版本）==============
 
 export class WechatEngine {
+  // === 统一控制台日志（脱敏；isDebugEnabled 每次调用求值）===
+  private logger = createLogger({ isDebugEnabled: () => isDebugEnabled() });
+
   // === 轮询会话（职责已抽到独立 PollingLoop，通过 deps 回调宿主能力）===
   private poller: PollingLoop;
 
@@ -93,23 +89,23 @@ export class WechatEngine {
 
   // === 媒体存储 / 后台串行队列（B5：媒体下载不阻塞轮询）===
   private mediaStore = new MediaStore({
-    log: (...a: unknown[]) => debugLog(String(a[0] ?? ""), ...a.slice(1)),
-    errLog: console.error,
+    log: (...a: unknown[]) => this.logger.debug(String(a[0] ?? ""), ...a.slice(1)),
+    errLog: (...a: unknown[]) => this.logger.error(String(a[0] ?? ""), ...a.slice(1)),
   });
   private mediaQueue = new SerialTaskQueue((err) =>
-    console.error("[Wechat] Media background task failed:", err),
+    this.logger.error("Media background task failed", err),
   );
 
   // === Typing / 发送 协作类（单用户）===
   private typing = new TypingController({
     getCredentials: () => this.getCredentials(),
-    debug: debugLog,
-    error: console.error,
+    debug: this.logger.debug.bind(this.logger),
+    error: this.logger.error.bind(this.logger),
   });
   private sender = new MessageSender({
     getCredentials: () => this.getCredentials(),
-    debug: debugLog,
-    error: console.error,
+    debug: this.logger.debug.bind(this.logger),
+    error: this.logger.error.bind(this.logger),
   });
 
   // === 注入依赖（host / config）===
@@ -127,11 +123,11 @@ export class WechatEngine {
       saveCursor: (accountId, cursor) => storage.saveSyncCursor(accountId, cursor),
       onMessage: (msg, opts) => this.handleMessage(msg, opts),
       onNeedsRelogin: () => {
-        debugLog("Session expired, needs relogin");
+        this.logger.debug("Session expired, needs relogin");
         this.notifier?.("微信登录已失效，请执行 /wechat login 重新登录", "error");
       },
-      debug: debugLog,
-      error: console.error,
+      debug: this.logger.debug.bind(this.logger),
+      error: this.logger.error.bind(this.logger),
       sleep: (ms) => this.sleep(ms),
     });
   }
@@ -178,7 +174,7 @@ export class WechatEngine {
     // 从持久化存储加载单用户凭证
     const credentials = await storage.getSingleUserCredentials();
     if (!credentials) {
-      console.error("[Wechat] No logged in account found");
+      this.logger.error("No logged in account found");
       return false;
     }
 
@@ -188,10 +184,10 @@ export class WechatEngine {
     // 加载 context token
     this.singleContextToken = await storage.getSingleUserContextToken();
     if (!this.singleContextToken) {
-      console.warn("[Wechat] No context token found, replies may fail");
+      this.logger.warn("No context token found, replies may fail");
     }
 
-    debugLog(`Single user initialized: userId=${this.singleUserId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
+    this.logger.debug(`Single user initialized: userId=${this.singleUserId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
     return true;
   }
 
@@ -224,7 +220,7 @@ export class WechatEngine {
 
     // 更新 contextToken（如果消息中有）
     if (msg.context_token && msg.context_token !== this.singleContextToken) {
-      debugLog(`Updating contextToken from message`);
+      this.logger.debug(`Updating contextToken from message`);
       this.singleContextToken = msg.context_token;
       // contextToken 变化后旧 typing ticket 立即失效
       this.typing.invalidateTicket();
@@ -252,7 +248,7 @@ export class WechatEngine {
     if (this.queue.isBusy() || this.isTerminalMessageProcessing) {
       // 加入队列
       this.queue.enqueue({ msg, requestId });
-      debugLog(`AI is ${this.queue.isBusy() ? 'processing' : 'terminal processing'}, queued message (queue size: ${this.queue.size})`);
+      this.logger.debug(`AI is ${this.queue.isBusy() ? 'processing' : 'terminal processing'}, queued message (queue size: ${this.queue.size})`);
       return;
     }
 
@@ -268,7 +264,7 @@ export class WechatEngine {
     const hasMedia = msg.item_list?.some(item => item.type !== MessageItemType.TEXT);
 
     if (hasMedia && !hasText) {
-      debugLog(`Media message detected, acknowledging and processing in background...`);
+      this.logger.debug(`Media message detected, acknowledging and processing in background...`);
 
       // B5：立即 ack（不含路径），下载/落盘放到后台串行队列，不阻塞轮询主循环。
       await this.sendTextMessage("媒体文件已收到，正在保存…");
@@ -294,7 +290,7 @@ export class WechatEngine {
       const host = this.host;
       if (!host) throw new Error("WechatHost not configured");
 
-      debugLog(`triggerAi: requestId=${requestId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
+      this.logger.debug(`triggerAi: requestId=${requestId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
 
       // 写入 wechat_meta（仅 requestId）—— pi 调用可能同步抛错
       host.appendEntry("wechat_meta", { requestId });
@@ -313,7 +309,7 @@ export class WechatEngine {
       handedOffToAgent = true;
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[Wechat] triggerAiInternal failed (requestId=${requestId}):`, errMsg);
+      this.logger.error(`triggerAiInternal failed (requestId=${requestId}):`, errMsg);
       this.markRequestProcessed(requestId);
     } finally {
       // 错误路径：无论从哪个 await 抛出都必须释放处理锁并继续排空队列。
@@ -350,7 +346,7 @@ export class WechatEngine {
         );
       }
     } catch (err) {
-      console.error(`[Wechat] processMediaInBackground failed (requestId=${requestId}):`, err);
+      this.logger.error(`processMediaInBackground failed (requestId=${requestId}):`, err);
     }
   }
 
@@ -419,11 +415,11 @@ export class WechatEngine {
     }
 
     const { msg, requestId } = this.queue.dequeue()!;
-    debugLog(`Triggering next message (queue size: ${this.queue.size})`);
+    this.logger.debug(`Triggering next message (queue size: ${this.queue.size})`);
 
     const opts = this.getCurrentOpts();
     if (!opts) {
-      console.error("[Wechat] Failed to process queued message: engine config missing");
+      this.logger.error("Failed to process queued message: engine config missing");
       this.queue.setBusy(false);
       if (this.queue.size > 0) void this.safelyTriggerNext();
       return;
@@ -433,7 +429,7 @@ export class WechatEngine {
       await this.triggerAiInternal(msg, requestId, opts);
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[Wechat] Failed to process queued message: ${errMsg}`);
+      this.logger.error(`Failed to process queued message: ${errMsg}`);
       this.queue.setBusy(false);
       this.queue.setCurrentRequestId(null);
       if (this.queue.size > 0) void this.safelyTriggerNext();
@@ -551,7 +547,7 @@ export class WechatEngine {
     this.singleUserId = null;
     this.singleContextToken = null;
 
-    debugLog("Engine state reset");
+    this.logger.debug("Engine state reset");
   }
 
   // ============== 工具方法 ==============

@@ -25,6 +25,7 @@ import { saveToken, upsertAccount, deleteAccountData, removeAccount, getDefaultA
 import { engine, setPi, setConfig } from "./wechat.js";
 import { isDebugEnabled } from "./config.js";
 import { redactToken } from "./util/redact.js";
+import { createLogger } from "./logger.js";
 
 // ============== 缓存 ==============
 
@@ -52,13 +53,9 @@ const costAccumulator = {
   lastId: null as string | null,
 };
 
-// ============== 调试日志辅助函数 ==============
+// ============== 统一控制台日志（脱敏）==============
 
-function debugLog(message: string, ...args: unknown[]): void {
-  if (isDebugEnabled()) {
-    console.log(`[Wechat] ${message}`, ...args);
-  }
-}
+const logger = createLogger({ isDebugEnabled: () => isDebugEnabled() });
 
 export default function (pi: ExtensionAPI) {
   setPi(pi);
@@ -81,11 +78,11 @@ export default function (pi: ExtensionAPI) {
       toolCallId: string,
       params: Static<typeof sendFileParams>,
     ): Promise<AgentToolResult<unknown>> => {
-      debugLog(`send_wechat_file tool called - toolCallId=${toolCallId}, params=`, JSON.stringify(params));
+      logger.debug(`send_wechat_file tool called - toolCallId=${toolCallId}, params=`, JSON.stringify(params));
 
       if (!params || typeof params !== "object") {
         const errMsg = "工具调用参数错误：请提供 localPath 参数";
-        debugLog(errMsg);
+        logger.debug(errMsg);
         throw new Error(errMsg);
       }
 
@@ -93,29 +90,29 @@ export default function (pi: ExtensionAPI) {
 
       if (!localPath || typeof localPath !== "string" || localPath.trim() === "") {
         const errMsg = "必须提供 localPath 参数（文件的完整绝对路径）。例如：/Users/mou/code/pi-dev/Agent.pptx";
-        debugLog(errMsg);
+        logger.debug(errMsg);
         throw new Error(errMsg);
       }
 
       const trimmedPath = localPath.trim();
       if (!existsSync(trimmedPath)) {
         const errMsg = `文件不存在: ${trimmedPath} （请确认路径是否正确，且文件在当前工作目录或指定绝对路径下）`;
-        debugLog(errMsg);
+        logger.debug(errMsg);
         throw new Error(errMsg);
       }
 
       // 底层 sendFileToUser 不再支持自定义显示名，以本地文件名为准。
       const displayName = path.basename(trimmedPath);
-      debugLog(`准备发送文件: ${displayName} (${trimmedPath})`);
+      logger.debug(`准备发送文件: ${displayName} (${trimmedPath})`);
 
       try {
         await engine.sendFileToUser(trimmedPath);
         const successMsg = `文件 "${displayName}" 已成功发送至微信`;
-        debugLog(successMsg);
+        logger.debug(successMsg);
         return { content: [{ type: "text", text: successMsg }], details: {} };
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        debugLog(`sendFileToUser 执行失败:`, errMsg);
+        logger.debug(`sendFileToUser 执行失败:`, errMsg);
         // SDK 约定：工具失败需通过 throw 上报（结果会带上 isError=true）。
         throw new Error(`发送文件失败: ${errMsg}`);
       }
@@ -188,14 +185,14 @@ export default function (pi: ExtensionAPI) {
     const token = await getDefaultAccountToken();
     if (token) {
       setConfig({ baseUrl: token.baseUrl, token: token.botToken });
-      debugLog(`session_start: loaded token for userId=${token.userId}`);
+      logger.debug(`session_start: loaded token for userId=${token.userId}`);
 
       // 启动轮询
       engine.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
-        console.error("[Wechat] Polling error:", err.message);
+        logger.error("Polling error:", err.message);
       });
     } else {
-      debugLog(`session_start: no logged in account found`);
+      logger.debug(`session_start: no logged in account found`);
     }
   });
 
@@ -228,11 +225,11 @@ export default function (pi: ExtensionAPI) {
     // 因此用「最近一条 wechat_meta 是否位于最后一条 assistant 之后」判断。
     const turn = resolveTurnBeforeRun(ctx, (event as { prompt?: string }).prompt);
     if (turn.fromWechat) {
-      debugLog(`before_agent_start: WeChat turn detected, requestId=${turn.requestId ?? "(unknown)"}`);
+      logger.debug(`before_agent_start: WeChat turn detected, requestId=${turn.requestId ?? "(unknown)"}`);
     } else {
       // 终端消息正在处理，微信消息需要排队
       engine.setTerminalProcessing(true);
-      debugLog(`before_agent_start: Terminal turn, WeChat messages will be queued`);
+      logger.debug(`before_agent_start: Terminal turn, WeChat messages will be queued`);
     }
   });
 
@@ -242,14 +239,14 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_start", async (event, ctx) => {
     if (!isAssistantMessage(event)) return;
     if (!resolveTurnFromBranch(ctx).fromWechat) return;
-    debugLog(`message_start: starting typing keepalive`);
+    logger.debug(`message_start: starting typing keepalive`);
     await engine.startTypingKeepalive();
   });
 
   pi.on("message_end", async (event, ctx) => {
     if (!isAssistantMessage(event)) return;
     if (!resolveTurnFromBranch(ctx).fromWechat) return;
-    debugLog(`message_end: stopping typing keepalive`);
+    logger.debug(`message_end: stopping typing keepalive`);
     await engine.stopTypingKeepalive();
   });
 
@@ -286,20 +283,20 @@ export default function (pi: ExtensionAPI) {
   async function handleWechatSettled(ctx: ExtensionContext, turn: WechatTurn): Promise<void> {
     try {
       if (!turn.requestId) {
-        debugLog(`agent_settled: WeChat turn without requestId, skip sending`);
+        logger.debug(`agent_settled: WeChat turn without requestId, skip sending`);
         return;
       }
 
       // 防重
       if (engine.isRequestProcessed(turn.requestId)) {
-        debugLog(`Request ${turn.requestId} already processed, skipping`);
+        logger.debug(`Request ${turn.requestId} already processed, skipping`);
         return;
       }
 
       // 提取本轮最终回复（branch 中最后一条有文本的 assistant 消息）
       const replyText = extractLastReply(ctx);
       if (!replyText) {
-        debugLog(`agent_settled: no reply text found`);
+        logger.debug(`agent_settled: no reply text found`);
         return;
       }
 
@@ -310,7 +307,7 @@ export default function (pi: ExtensionAPI) {
       const metaInfo = buildMetaInfo(ctx);
       const finalReply = replyText + (metaInfo ? "\n\n" + metaInfo : "");
 
-      debugLog(`Sending reply: ${replyText.slice(0, 50)}...`);
+      logger.debug(`Sending reply: ${replyText.slice(0, 50)}...`);
 
       try {
         await engine.sendMessageWithRetry(finalReply);
@@ -318,7 +315,7 @@ export default function (pi: ExtensionAPI) {
         engine.markRequestProcessed(turn.requestId);
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[Wechat] Failed to send reply:`, errMsg);
+        logger.error(`Failed to send reply:`, errMsg);
         ctx.ui?.notify?.(`微信回复失败: ${errMsg}`, "error");
       }
     } finally {
