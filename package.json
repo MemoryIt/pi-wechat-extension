@@ -11,6 +11,7 @@
     "test": "bun test --isolate"
   },
   "dependencies": {
+    "@sinclair/typebox": "^0.34.0",
     "qrcode-terminal": "0.12.0",
     "zod": "4.3.6"
   },

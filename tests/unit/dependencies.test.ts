@@ -41,17 +41,12 @@ const bareImports = collectBareImports();
 // D22-a：@sinclair/typebox 被核心文件 import，却未声明
 // ---------------------------------------------------------------------------
 
-test("D22 证伪：index.ts 引入了 @sinclair/typebox，但 package.json 未声明", () => {
-  expect(bareImports).toContain("@sinclair/typebox");
-  expect(pkg.dependencies?.["@sinclair/typebox"]).toBeUndefined();
-});
-
-test.failing("D22 目标：核心文件用到的裸包都应在 package.json 中声明", () => {
+test("D22 目标：核心文件用到的裸包都应在 package.json 中声明", () => {
   const declared = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
   const missing = bareImports.filter((spec) => declared[spec] === undefined);
   expect(missing).toEqual([]);
 });
 
-test.failing("D22 目标：@sinclair/typebox 应声明在 dependencies", () => {
+test("D22 目标：@sinclair/typebox 应声明在 dependencies", () => {
   expect(pkg.dependencies?.["@sinclair/typebox"]).toBeDefined();
 });

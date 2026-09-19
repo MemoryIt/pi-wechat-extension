@@ -33,15 +33,7 @@ beforeEach(() => {
 // D8-a：WECHAT_DEBUG=false 无法覆盖 config.json 的 debug:true
 // ---------------------------------------------------------------------------
 
-test("D8-a 证伪：WECHAT_DEBUG=false 被忽略，config.json 的 debug:true 仍生效", () => {
-  writeConfig({ debug: true });
-  process.env.WECHAT_DEBUG = "false";
-  config.clearConfigCache();
-
-  expect(config.isDebugEnabled()).toBe(true);
-});
-
-test.failing("D8-a 目标：WECHAT_DEBUG=false 应覆盖 config.json 的 debug:true", () => {
+test("D8-a 目标：WECHAT_DEBUG=false 应覆盖 config.json 的 debug:true", () => {
   writeConfig({ debug: true });
   process.env.WECHAT_DEBUG = "false";
   config.clearConfigCache();
@@ -53,16 +45,7 @@ test.failing("D8-a 目标：WECHAT_DEBUG=false 应覆盖 config.json 的 debug:t
 // D8-b：只设置 WECHAT_MEDIA_PATH 会把 debug 强制变成 false
 // ---------------------------------------------------------------------------
 
-test("D8-b 证伪：只设置 WECHAT_MEDIA_PATH 时 debug 被连带置为 false", () => {
-  writeConfig({ debug: true });
-  process.env.WECHAT_MEDIA_PATH = "/tmp/pi-wechat-media";
-  config.clearConfigCache();
-
-  expect(config.getMediaStoragePath()).toBe("/tmp/pi-wechat-media");
-  expect(config.isDebugEnabled()).toBe(false);
-});
-
-test.failing("D8-b 目标：只设置 WECHAT_MEDIA_PATH 不应影响 config.json 的 debug", () => {
+test("D8-b 目标：只设置 WECHAT_MEDIA_PATH 不应影响 config.json 的 debug", () => {
   writeConfig({ debug: true });
   process.env.WECHAT_MEDIA_PATH = "/tmp/pi-wechat-media";
   config.clearConfigCache();
@@ -95,12 +78,7 @@ test("基线：WECHAT_DEBUG=true 可开启 debug", () => {
 // D8-c：DEFAULT_CONFIG 含接口未声明的 prefix 字段
 // ---------------------------------------------------------------------------
 
-test("D8-c 证伪：DEFAULT_CONFIG 携带了接口未声明的 prefix 字段", () => {
-  const defaultConfig = (config as unknown as { DEFAULT_CONFIG: Record<string, unknown> }).DEFAULT_CONFIG;
-  expect(defaultConfig.prefix).toBeDefined();
-});
-
-test.failing("D8-c 目标：DEFAULT_CONFIG 不应包含 prefix 字段", () => {
+test("D8-c 目标：DEFAULT_CONFIG 不应包含 prefix 字段", () => {
   const defaultConfig = (config as unknown as { DEFAULT_CONFIG: Record<string, unknown> }).DEFAULT_CONFIG;
   expect(defaultConfig.prefix).toBeUndefined();
 });
