@@ -53,7 +53,6 @@ beforeEach(async () => {
   engine.reset();
   const e = engine as unknown as AnyEngine;
   e.isTerminalMessageProcessing = false;
-  e.consecutiveFailures = 0;
   e.typingTicketCache = null;
 
   await seedSingleUser(storage);
@@ -336,4 +335,25 @@ test("C9 目标：createWechatEngine 独立实例注入 fake host/config，不�
   // 模块单例状态完全不受影响
   expect(pi.calls.appendEntry.length).toBe(0);
   expect(pi.calls.sendUserMessage.length).toBe(0);
+});
+
+// ---------------------------------------------------------------------------
+// B4：会话过期时通过 notifier 提示用户重新登录（不自动拉起二维码）
+// ---------------------------------------------------------------------------
+
+test("B4 目标：needs_relogin 时通知用户执行 /wechat login", async () => {
+  const isolated = createWechatEngine({ config: { baseUrl: opts.baseUrl, token: opts.token } });
+  const notify = mock((_message: string, _type?: string) => {});
+  isolated.setNotifier(notify);
+
+  // 底层返回会话过期错误
+  apiMock.getUpdates.mockImplementation(async () => {
+    throw { errcode: -14 };
+  });
+
+  await isolated.startPolling(opts);
+
+  expect(notify).toHaveBeenCalledTimes(1);
+  expect(String(notify.mock.calls[0][0])).toContain("/wechat login");
+  expect(isolated.connectionState).toBe("needs_relogin");
 });

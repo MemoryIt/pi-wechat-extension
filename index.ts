@@ -178,9 +178,12 @@ export default function (pi: ExtensionAPI) {
 
   // ============== session_start ==============
 
-  pi.on("session_start", async (_event, _ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     // 不再用空 render 覆盖内置 footer；分支名通过 pi.exec 获取。
     cachedGitBranch = await readGitBranch();
+
+    // B4：会话过期（needs_relogin）时通过 UI 通知用户
+    engine.setNotifier((msg, type) => ctx.ui.notify(msg, type ?? "info"));
 
     const token = await getDefaultAccountToken();
     if (token) {
