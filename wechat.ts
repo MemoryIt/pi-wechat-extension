@@ -15,29 +15,18 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { WeixinMessage } from "./api/types";
 import { MessageItemType } from "./api/types.js";
 import * as storage from "./storage/state.js";
-import { getUpdates, sendTyping, getConfig } from "./api/api.js";
+import { sendTyping, getConfig } from "./api/api.js";
 import type { WeixinApiOptions } from "./api/api.js";
-// ============== 类型定义 ==============
-
-type ConnectionState =
-  | "disconnected"
-  | "connecting"
-  | "connected"
-  | "error"
-  | "needs_relogin";
 import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { getMediaStoragePath, isDebugEnabled } from "./config.js";
 import { downloadMediaFromItem } from "./media/media-download.js";
+import { PollingLoop } from "./polling.js";
+import type { ConnectionState } from "./polling.js";
 
-const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
-
-/**
- * 轮询中止哨兵：用于区分「主动 stopPolling」与真实网络错误。
- * 底层 getUpdates 不接受 AbortSignal，核心层改用 Promise.race 抢跑中止。
- */
-const POLL_ABORTED = Symbol("wechat-poll-aborted");
+// 保持对外导出兼容（ConnectionState 现已迁至 polling.ts）
+export type { ConnectionState } from "./polling.js";
 
 // ============== 调试日志辅助函数 ==============
 
@@ -233,22 +222,10 @@ export function setConfig(config: WechatConfig): void {
 // ============== WechatEngine（单用户版本）==============
 
 export class WechatEngine {
-  // === 基础状态 ===
-  private state: {
-    syncCursor: string;
-    connectionState: ConnectionState;
-  } = {
-    syncCursor: "",
-    connectionState: "disconnected",
-  };
+  // === 轮询会话（职责已抽到独立 PollingLoop，通过 deps 回调宿主能力）===
+  private poller: PollingLoop;
 
-  private abortController = new AbortController();
-  private consecutiveFailures = 0;
   private accountId: string | null = null;
-
-  // === 轮询会话控制（重入守卫 + 过期结果丢弃）===
-  private pollingActive = false;
-  private pollingGeneration = 0;
 
   // === 单用户凭证（运行时加载）===
   private singleUserId: string | null = null;
@@ -280,8 +257,32 @@ export class WechatEngine {
   private host: WechatHost | null = null;
   private config: WechatConfig | null = null;
 
+  // === 通知回调（B4：会话过期时提示用户）===
+  private notifier: ((message: string, type?: "info" | "warning" | "error") => void) | null = null;
+
+  constructor() {
+    this.poller = new PollingLoop({
+      ensureSession: () => this.initSingleUser(),
+      getAccountId: () => this.accountId,
+      loadCursor: (accountId) => storage.loadSyncCursor(accountId),
+      saveCursor: (accountId, cursor) => storage.saveSyncCursor(accountId, cursor),
+      onMessage: (msg, opts) => this.handleMessage(msg, opts),
+      onNeedsRelogin: () => {
+        debugLog("Session expired, needs relogin");
+        this.notifier?.("微信登录已失效，请执行 /wechat login 重新登录", "error");
+      },
+      debug: debugLog,
+      error: console.error,
+      sleep: (ms) => this.sleep(ms),
+    });
+  }
+
   setHost(host: WechatHost): void {
     this.host = host;
+  }
+
+  setNotifier(notifier: (message: string, type?: "info" | "warning" | "error") => void): void {
+    this.notifier = notifier;
   }
 
   setConfig(config: WechatConfig): void {
@@ -296,7 +297,7 @@ export class WechatEngine {
 
   // === getter ===
   get connectionState(): ConnectionState {
-    return this.state.connectionState;
+    return this.poller.connectionState;
   }
 
   // === 终端处理状态 getter/setter（新增）===
@@ -336,131 +337,17 @@ export class WechatEngine {
   }
 
   /**
-   * 停止长轮询
-   *
-   * 记录停止动作（abort），使 startPolling 内的 Promise.race 立即抢跑退出。
-   * 注意：底层 getUpdates 不接受 AbortSignal，因此在途请求仍会在后台直到超时
-   * （35s）才结束；但核心层不再等待它，轮询循环会迅速退出。
+   * 停止长轮询（委托 PollingLoop）
    */
   stopPolling(): void {
-    this.abortController.abort();
-    this.state.connectionState = "disconnected";
+    this.poller.stop();
   }
 
   /**
-   * 构造「收到 abort 即 reject(POLL_ABORTED)」的 promise，并返回解除监听的函数。
-   */
-  private createAbortWaiter(signal: AbortSignal): { promise: Promise<never>; dispose: () => void } {
-    let onAbort: (() => void) | null = null;
-    const promise = new Promise<never>((_resolve, reject) => {
-      onAbort = () => reject(POLL_ABORTED);
-      if (signal.aborted) {
-        onAbort();
-      } else {
-        signal.addEventListener("abort", onAbort, { once: true });
-      }
-    });
-    return {
-      promise,
-      dispose: () => {
-        if (onAbort) signal.removeEventListener("abort", onAbort);
-      },
-    };
-  }
-
-  /**
-   * 启动长轮询
-   *
-   * 重入守卫：若已有轮询会话在运行，直接返回，绝不并发第二条循环。
-   * generation 令牌：reset()/新会话会让旧令牌过期，旧循环拿到过期结果后直接丢弃，
-   * 避免污染新会话状态。
+   * 启动长轮询（委托 PollingLoop）
    */
   async startPolling(opts: { baseUrl: string; token: string }): Promise<void> {
-    if (this.pollingActive) {
-      debugLog("startPolling ignored: polling is already active");
-      return;
-    }
-    this.pollingActive = true;
-    const generation = ++this.pollingGeneration;
-
-    if (this.abortController.signal.aborted) {
-      this.abortController = new AbortController();
-    }
-    const abortSignal = this.abortController.signal;
-
-    try {
-      // 初始化单用户凭证
-      if (!(await this.initSingleUser())) {
-        return;
-      }
-      if (generation !== this.pollingGeneration) return;
-
-      // 加载 sync cursor
-      this.state.syncCursor = (await storage.loadSyncCursor(this.accountId!)) ?? "";
-
-      while (!abortSignal.aborted) {
-        if (generation !== this.pollingGeneration) break;
-
-        // 在途请求与 abort 抢跑：stopPolling 后循环迅速退出。
-        // 在途 getUpdates 仍在后台直到自身超时（底层不支持 AbortSignal）。
-        const abortWaiter = this.createAbortWaiter(abortSignal);
-        try {
-          const updates = await Promise.race([
-            getUpdates({
-              get_updates_buf: this.state.syncCursor,
-              baseUrl: opts.baseUrl,
-              token: opts.token,
-              timeoutMs: DEFAULT_LONG_POLL_TIMEOUT_MS,
-            }),
-            abortWaiter.promise,
-          ]);
-
-          if (generation !== this.pollingGeneration) break;
-
-          for (const msg of updates.msgs ?? []) {
-            if (abortSignal.aborted || generation !== this.pollingGeneration) break;
-            await this.handleMessage(msg, opts);
-          }
-
-          // 更新并持久化 cursor
-          this.state.syncCursor = updates.get_updates_buf ?? this.state.syncCursor;
-          if (this.accountId) {
-            await storage.saveSyncCursor(this.accountId, this.state.syncCursor);
-          }
-
-          this.consecutiveFailures = 0;
-          this.state.connectionState = "connected";
-        } catch (error: unknown) {
-          // 主动停止 / 过期会话：直接退出，不当作轮询失败
-          if (error === POLL_ABORTED || abortSignal.aborted || generation !== this.pollingGeneration) {
-            debugLog("Polling loop aborted, exiting");
-            break;
-          }
-
-          if (this.isSessionExpiredError(error)) {
-            this.state.connectionState = "needs_relogin";
-            console.error("[Wechat] Session expired, needs relogin");
-            return;
-          }
-
-          this.consecutiveFailures++;
-          this.state.connectionState = "error";
-          const errMsg = error instanceof Error ? error.message : String(error);
-          console.error(`[Wechat] Poll error (attempt ${this.consecutiveFailures}):`, errMsg);
-
-          const delay = Math.min(2000 * this.consecutiveFailures, 30_000);
-          await this.sleep(delay);
-        } finally {
-          abortWaiter.dispose();
-        }
-      }
-    } finally {
-      // 只有当前会话仍是最新时才释放守卫，避免旧循环误清新会话
-      if (generation === this.pollingGeneration) {
-        this.pollingActive = false;
-        this.state.connectionState = "disconnected";
-      }
-    }
+    await this.poller.start(opts);
   }
 
   /**
@@ -949,28 +836,18 @@ export class WechatEngine {
     this.currentRequestId = null;
     this.isAiProcessing = false;
     this.isTerminalMessageProcessing = false;
-    this.consecutiveFailures = 0;
     this.cleanupCounter = 0;
     this.lastRequestIdMs = -1;
     this.requestIdSeq = 0;
 
-    // 让旧轮询会话的 generation 过期，丢弃其后续结果
-    this.pollingGeneration++;
-    this.pollingActive = false;
+    // 轮询部分：generation 过期、abort、重建 controller、清 cursor/连接状态/失败计数
+    this.poller.reset();
 
-    // 停止并重建 AbortController
-    this.abortController.abort();
-    this.abortController = new AbortController();
-    
     // 清空账号相关状态
     this.accountId = null;
     this.singleUserId = null;
     this.singleContextToken = null;
-    
-    // 重置连接状态
-    this.state.syncCursor = "";
-    this.state.connectionState = "disconnected";
-    
+
     debugLog("Engine state reset");
   }
 
@@ -989,14 +866,6 @@ export class WechatEngine {
       this.requestIdSeq += 1;
     }
     return `${formatTimestamp(new Date(now))}${String(this.requestIdSeq).padStart(3, "0")}`;
-  }
-
-  private isSessionExpiredError(error: unknown): boolean {
-    if (typeof error === 'object' && error !== null) {
-      const err = error as Record<string, unknown>;
-      return err.errcode === -14 || err.code === -14;
-    }
-    return false;
   }
 
   private sleep(ms: number): Promise<void> {

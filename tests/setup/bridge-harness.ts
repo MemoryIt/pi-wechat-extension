@@ -14,6 +14,7 @@ export interface BridgeEngine {
   connectionState: string;
   _terminal: boolean;
   _processed: Set<string>;
+  setNotifier: ReturnType<typeof mock>;
   setTerminalProcessing: ReturnType<typeof mock>;
   getTerminalProcessing: ReturnType<typeof mock>;
   startPolling: ReturnType<typeof mock>;
@@ -34,6 +35,7 @@ export function createBridgeEngine(): BridgeEngine {
     connectionState: "disconnected",
     _terminal: false,
     _processed: processed,
+    setNotifier: mock(() => {}),
     setTerminalProcessing: mock((v: boolean) => {
       engine._terminal = v;
     }),
@@ -58,6 +60,7 @@ export function resetBridgeEngine(engine: BridgeEngine): void {
   engine._terminal = false;
   engine._processed.clear();
   for (const key of [
+    "setNotifier",
     "setTerminalProcessing",
     "getTerminalProcessing",
     "startPolling",
