@@ -43,6 +43,8 @@ export function createFakePi(): FakePi {
     appendEntry: mock(() => {}),
     sendMessage: mock(() => {}),
     sendUserMessage: mock(() => {}),
+    // index.ts 用 pi.exec 获取当前 git 分支，替代覆盖内置 footer。
+    exec: mock(async () => ({ stdout: "main\n", stderr: "", code: 0, killed: false })),
   };
 
   return { api, handlers, tools, commands };
@@ -50,6 +52,17 @@ export function createFakePi(): FakePi {
 
 export function assistantMessage(text: string): { role: string; content: unknown } {
   return { role: "assistant", content: [{ type: "text", text }] };
+}
+
+/**
+ * 构造一个 sessionManager.getBranch() 返回的 assistant message entry。
+ * 用于验证 agent_settled 阶段从分支中提取最终回复。
+ */
+export function assistantEntry(
+  text: string,
+  id = `assistant-${text}`,
+): { type: string; id: string; message: { role: string; content: unknown } } {
+  return { type: "message", id, message: assistantMessage(text) };
 }
 
 /** 构造一个 sessionManager.getBranch() 返回的 wechat_meta 自定义 entry。 */
