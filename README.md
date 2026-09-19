@@ -218,7 +218,13 @@ onAiDone → 检查队列 → 触发下一条
 ```
 pi-wechat-extension/
 ├── src/                        # 自写核心模块
-│   ├── index.ts                # 插件入口（事件桥接 / 命令 / 工具）
+│   ├── index.ts                # 插件入口（组合根）
+│   ├── bridge.ts               # pi.on 事件桥接 + agent_settled
+│   ├── commands.ts             # /wechat 命令注册
+│   ├── login.ts                # 扫码登录
+│   ├── tool-send-file.ts       # send_wechat_file 工具
+│   ├── turn.ts                 # turn 身份解析（近纯函数）
+│   ├── meta.ts                 # 模型元信息 / git 分支缓存
 │   ├── wechat.ts               # 引擎门面（单用户模式）
 │   ├── polling.ts              # PollingLoop：长轮询 / 退避 / abort
 │   ├── queue.ts                # TurnQueue + SerialTaskQueue
@@ -266,7 +272,7 @@ pi-wechat-extension/
 ├── tests/                      # 缺陷回归测试 + 分层夹具（bun test --isolate）
 │   ├── unit/                   # config / storage / logger / dependencies
 │   ├── engine/                 # wechat.ts / queue.ts / media-store.ts
-│   └── bridge/                 # index.ts 事件桥接
+│   └── bridge/                 # 事件桥接 / turn / meta
 │
 ├── .forgejo/workflows/ci.yml   # Forgejo Actions：test + typecheck
 └── package.json
