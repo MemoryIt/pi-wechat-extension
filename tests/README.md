@@ -16,9 +16,11 @@
 | R4 | 提取 `MediaStore` + B5 后台串行媒体 | `media-store.test.ts`、`engine.test.ts` 非阻塞/串行用例 |
 | R5 | 提取 `TypingController` / `MessageSender` | 复用既有 D14/D16/D16b 用例 |
 | R6 | 统一 `logger.ts` + 脱敏（B7） | `tests/unit/logger.test.ts` |
+| B1 | 拆分 `src/index.ts` → `bridge/turn/meta/commands/tool-send-file/login` | `tests/bridge/turn.test.ts`、`tests/bridge/meta.test.ts` |
+| B2 | 拆分 `src/wechat.ts` 的 turn 执行为 `src/router.ts` | `tests/engine/router.test.ts` |
 
 迁移注意：engine 内部字段（如 `typingTicketCache`、`pendingMessages`）已移入协作类，测试统一走 engine 公共方法；
-`tests/engine/queue.test.ts` / `media-store.test.ts` 直接对纯模块做单测。
+`tests/engine/queue.test.ts` / `media-store.test.ts` / `router.test.ts` 直接对纯模块做单测。
 
 ## 运行
 
