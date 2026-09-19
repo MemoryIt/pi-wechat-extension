@@ -31,7 +31,7 @@ import {
 installEngineMocks();
 
 const engineModule = await importEngine();
-const { engine, setPi, setConfig } = engineModule;
+const { engine, setPi, setConfig, createWechatEngine } = engineModule;
 const storage = await importStorage();
 const config = await importConfig();
 
@@ -311,4 +311,29 @@ test("D7 目标：队列排空时 rejecting turn 应由引擎处理并释放状�
   } finally {
     restore();
   }
+});
+
+// ---------------------------------------------------------------------------
+// C9：实例级依赖注入，不依赖模块单例状态
+// ---------------------------------------------------------------------------
+
+test("C9 目标：createWechatEngine 独立实例注入 fake host/config，不污染模块单例", async () => {
+  const isolated = createWechatEngine();
+  const isolatedPi = createEnginePi();
+  isolated.configure({
+    host: isolatedPi,
+    config: { baseUrl: opts.baseUrl, token: opts.token },
+  });
+
+  await isolated.triggerAi(textMessage("isolated hello"), "R-iso", opts);
+
+  // fake host 收到调用（走实例自身的 host，而非模块级 pi）
+  expect(isolatedPi.calls.appendEntry[0][0]).toBe("wechat_meta");
+  expect(isolatedPi.calls.appendEntry[0][1]).toEqual({ requestId: "R-iso" });
+  expect(isolatedPi.calls.sendUserMessage.length).toBe(1);
+  expect(String(isolatedPi.calls.sendUserMessage[0][0])).toBe("isolated hello");
+
+  // 模块单例状态完全不受影响
+  expect(pi.calls.appendEntry.length).toBe(0);
+  expect(pi.calls.sendUserMessage.length).toBe(0);
 });

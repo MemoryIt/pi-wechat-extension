@@ -194,22 +194,40 @@ function createSaveMediaCallback(): SaveMediaFn {
   };
 }
 
-// ============== 全局变量 ==============
+// ============== 宿主依赖（依赖注入）==============
 
-let pi: ExtensionAPI;
+/**
+ * 窄接口：WechatEngine 只依赖 pi 的这三个方法，
+ * 避免测试必须实现整个 ExtensionAPI。
+ */
+export interface WechatHost {
+  appendEntry(customType: string, data?: unknown): void;
+  sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }): void;
+  sendMessage(
+    message: { customType: string; content: string; display: boolean },
+    options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+  ): void;
+}
 
-interface WechatConfig {
+export interface WechatConfig {
   baseUrl: string;
   token: string;
 }
-let wechatConfig: WechatConfig | null = null;
 
-export function setConfig(config: WechatConfig): void {
-  wechatConfig = config;
+/**
+ * 门面：把完整 ExtensionAPI 适配为窄接口 WechatHost 后注入单例 engine。
+ * index.ts 依赖此函数，保持签名不变。
+ */
+export function setPi(piInstance: ExtensionAPI): void {
+  engine.setHost({
+    appendEntry: (t, d) => piInstance.appendEntry(t, d),
+    sendUserMessage: (c, o) => piInstance.sendUserMessage(c, o),
+    sendMessage: (m, o) => piInstance.sendMessage(m, o),
+  });
 }
 
-export function setPi(piInstance: ExtensionAPI): void {
-  pi = piInstance;
+export function setConfig(config: WechatConfig): void {
+  engine.setConfig(config);
 }
 
 // ============== WechatEngine（单用户版本）==============
@@ -257,6 +275,24 @@ export class WechatEngine {
   private typingKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private readonly TYPING_KEEPALIVE_INTERVAL_MS = 8000;
   private readonly TYPING_TICKET_CACHE_TTL_MS = 60_000;
+
+  // === 注入依赖（host / config）===
+  private host: WechatHost | null = null;
+  private config: WechatConfig | null = null;
+
+  setHost(host: WechatHost): void {
+    this.host = host;
+  }
+
+  setConfig(config: WechatConfig): void {
+    this.config = config;
+  }
+
+  /** 可选字段各自覆盖：未提供的依赖保持不变。 */
+  configure(deps: { host?: WechatHost; config?: WechatConfig }): void {
+    if (deps.host) this.host = deps.host;
+    if (deps.config) this.config = deps.config;
+  }
 
   // === getter ===
   get connectionState(): ConnectionState {
@@ -524,7 +560,9 @@ export class WechatEngine {
         await this.sendTextMessage(replyText);
 
         // 加入会话历史（不触发 AI 回复）
-        pi.sendMessage(
+        const host = this.host;
+        if (!host) throw new Error("WechatHost not configured");
+        host.sendMessage(
           { customType: "wechat_media", content: replyText, display: false },
           { triggerTurn: false, deliverAs: "followUp" },
         );
@@ -547,10 +585,13 @@ export class WechatEngine {
     let handedOffToAgent = false;
 
     try {
+      const host = this.host;
+      if (!host) throw new Error("WechatHost not configured");
+
       debugLog(`triggerAi: requestId=${requestId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
 
       // 写入 wechat_meta（仅 requestId）—— pi 调用可能同步抛错
-      pi.appendEntry("wechat_meta", { requestId });
+      host.appendEntry("wechat_meta", { requestId });
 
       // 直接获取文本内容
       const textParts: string[] = [];
@@ -562,7 +603,7 @@ export class WechatEngine {
       const content = textParts.join("\n");
 
       // sendUserMessage 为同步 void：同步抛错必须在这里被捕获，不得冒泡成「轮询失败」
-      pi.sendUserMessage(content, { deliverAs: "followUp" });
+      host.sendUserMessage(content, { deliverAs: "followUp" });
       handedOffToAgent = true;
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -668,7 +709,8 @@ export class WechatEngine {
   }
 
   private getCurrentOpts(): { baseUrl: string; token: string } | null {
-    return wechatConfig ? { baseUrl: wechatConfig.baseUrl, token: wechatConfig.token } : null;
+    const cfg = this.config;
+    return cfg ? { baseUrl: cfg.baseUrl, token: cfg.token } : null;
   }
 
   // ============== Typing 相关（单用户）==============
@@ -677,7 +719,8 @@ export class WechatEngine {
    * 获取 typing_ticket（单用户）
    */
   async getTypingTicket(): Promise<string | null> {
-    if (!wechatConfig || !this.singleUserId || !this.singleContextToken) {
+    const cfg = this.config;
+    if (!cfg || !this.singleUserId || !this.singleContextToken) {
       return null;
     }
 
@@ -692,8 +735,8 @@ export class WechatEngine {
 
     try {
       const configResp = await getConfig({
-        baseUrl: wechatConfig.baseUrl,
-        token: wechatConfig.token,
+        baseUrl: cfg.baseUrl,
+        token: cfg.token,
         ilinkUserId: this.singleUserId,
         contextToken: this.singleContextToken,
       });
@@ -717,7 +760,8 @@ export class WechatEngine {
    * 发送 typing 状态（单用户）
    */
   async sendTypingStatus(status: 1 | 2): Promise<void> {
-    if (!wechatConfig || !this.singleUserId || !this.singleContextToken) {
+    const cfg = this.config;
+    if (!cfg || !this.singleUserId || !this.singleContextToken) {
       return;
     }
 
@@ -729,8 +773,8 @@ export class WechatEngine {
 
     try {
       await sendTyping({
-        baseUrl: wechatConfig.baseUrl,
-        token: wechatConfig.token,
+        baseUrl: cfg.baseUrl,
+        token: cfg.token,
         body: {
           ilink_user_id: this.singleUserId,
           typing_ticket: ticket,
@@ -782,7 +826,8 @@ export class WechatEngine {
    * 完全取代 sendMessageToUser + sendReplyToUser
    */
   async sendTextMessage(text: string): Promise<void> {
-    if (!wechatConfig || !this.singleUserId || !this.singleContextToken) {
+    const cfg = this.config;
+    if (!cfg || !this.singleUserId || !this.singleContextToken) {
       throw new Error("Single user not initialized");
     }
     debugLog(`sendTextMessage: text length=${text.length}`);
@@ -791,8 +836,8 @@ export class WechatEngine {
       to: this.singleUserId,
       text: text,
       opts: {
-        baseUrl: wechatConfig.baseUrl,
-        token: wechatConfig.token,
+        baseUrl: cfg.baseUrl,
+        token: cfg.token,
         contextToken: this.singleContextToken,
       },
     });
@@ -809,7 +854,8 @@ export class WechatEngine {
       throw new Error("sendFileToUser: localPath 不能为空");
     }
 
-    if (!wechatConfig || !this.singleUserId || !this.singleContextToken) {
+    const cfg = this.config;
+    if (!cfg || !this.singleUserId || !this.singleContextToken) {
       throw new Error("Single user not initialized");
     }
 
@@ -817,8 +863,8 @@ export class WechatEngine {
     debugLog(`sendFileToUser START: localPath=${localPath}, displayName=${displayName} (使用官方 sendWeixinMediaFile)`);
 
     const opts: WeixinApiOptions & { contextToken?: string } = {
-      baseUrl: wechatConfig.baseUrl,
-      token: wechatConfig.token,
+      baseUrl: cfg.baseUrl,
+      token: cfg.token,
       contextToken: this.singleContextToken!,
     };
 
@@ -956,6 +1002,13 @@ export class WechatEngine {
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+}
+
+// === 工厂函数（供测试隔离：创建不共享模块单例状态的独立实例）===
+export function createWechatEngine(initial?: { host?: WechatHost; config?: WechatConfig }): WechatEngine {
+  const instance = new WechatEngine();
+  if (initial) instance.configure(initial);
+  return instance;
 }
 
 // === 导出单例 ===
