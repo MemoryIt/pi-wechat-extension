@@ -4,6 +4,22 @@
 > 原先断言的「证伪」用例已随修复删除，所有「目标」用例已晋升为普通 `test`。
 > 本文档保留证伪/目标方法论，作为后续新缺陷的回归流程参考。
 
+## 架构重构回归（R1–R6）
+
+2026-09 的架构重构在不改变外部行为的前提下拆分了 `wechat.ts`；整套测试在每个阶段保持全绿：
+
+| 阶段 | 内容 | 新增/受影响测试 |
+|---|---|---|
+| R1 | 去模块全局，注入 `WechatHost`/config + `createWechatEngine()` | `engine.test.ts` 隔离实例用例 |
+| R2 | 提取 `PollingLoop` + B4 `needs_relogin` 通知 | `engine.test.ts` B4 用例 |
+| R3 | 提取 `TurnQueue` + B6 关联性 | `queue.test.ts`、`engine.test.ts` 连发排空用例 |
+| R4 | 提取 `MediaStore` + B5 后台串行媒体 | `media-store.test.ts`、`engine.test.ts` 非阻塞/串行用例 |
+| R5 | 提取 `TypingController` / `MessageSender` | 复用既有 D14/D16/D16b 用例 |
+| R6 | 统一 `logger.ts` + 脱敏（B7） | `tests/unit/logger.test.ts` |
+
+迁移注意：engine 内部字段（如 `typingTicketCache`、`pendingMessages`）已移入协作类，测试统一走 engine 公共方法；
+`tests/engine/queue.test.ts` / `media-store.test.ts` 直接对纯模块做单测。
+
 ## 运行
 
 环境使用 Bun（`node` 在本机只是指向 `bun` 的软链，没有 npm）：

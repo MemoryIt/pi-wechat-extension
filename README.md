@@ -217,8 +217,15 @@ onAiDone → 检查队列 → 触发下一条
 
 ```
 pi-wechat-extension/
-├── index.ts                    # 插件入口
-├── wechat.ts                   # 核心引擎，单用户模式实现
+├── index.ts                    # 插件入口（事件桥接 / 命令 / 工具）
+├── wechat.ts                   # 引擎门面（单用户模式）
+├── polling.ts                  # PollingLoop：长轮询 / 退避 / abort
+├── queue.ts                    # TurnQueue + SerialTaskQueue
+├── media-store.ts              # 媒体落盘 / 魔数识别 / 下载
+├── typing.ts                   # TypingController
+├── sender.ts                   # MessageSender
+├── logger.ts                   # 统一日志 + 脱敏
+├── time.ts                     # 共享时间戳
 ├── config.ts                   # 配置管理
 │
 ├── api/                        # HTTP API（来自 Tencent/openclaw-weixin）
@@ -251,12 +258,18 @@ pi-wechat-extension/
 │   └── state.ts                # 持久化存储 + 单用户便捷函数
 │
 ├── util/                       # 工具模块（来自 Tencent/openclaw-weixin）
-│   ├── logger.ts               # 日志记录
+│   ├── logger.ts               # 文件日志（JSON lines）
 │   ├── redact.ts               # 敏感信息脱敏
 │   └── random.ts               # 随机 ID 生成
 │
+├── tests/                      # 缺陷回归测试 + 分层夹具（bun test --isolate）
+│   ├── unit/                   # config / storage / logger / dependencies
+│   ├── engine/                 # wechat.ts / queue.ts / media-store.ts
+│   └── bridge/                 # index.ts 事件桥接
+│
+├── .forgejo/workflows/ci.yml   # Forgejo Actions：test + typecheck
 └── package.json
 ```
 
-> **说明**：根目录下的 `index.ts`、`wechat.ts`、`config.ts` 和 `storage/state.ts` 是本插件的核心文件，其余模块均从 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin) 项目适配。
+> **说明**：根目录下的 `index.ts`、`wechat.ts` 及其拆分出的协作模块（`polling.ts`、`queue.ts`、`media-store.ts`、`typing.ts`、`sender.ts`、`logger.ts`、`time.ts`）、`config.ts`、`storage/state.ts` 是本插件自写的核心代码；`api/`、`auth/`、`cdn/`、`media/`、`messaging/`、`util/` 适配自 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)。
 
