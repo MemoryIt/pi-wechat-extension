@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `docs/ARCHITECTURE.md`: framework / maintainer documentation (layers, module
+  responsibilities, key mechanisms, migrated-module call surface, storage layout,
+  development & testing). `README.md` now targets end users only.
+- `MessageRouter` (`src/engine/router.ts`) extracted from `wechat.ts`.
+
+### Changed
+
+- `src/` reorganized into `engine/`, `bridge/`, `shared/`, `storage/`; `index.ts`
+  reduced to a composition root; `bridge.ts` → `bridge/events.ts`.
+- Removed archived docs `docs/PROGRESS.md`, `docs/SPEC.md` and
+  `docs/why-wechat-new-session-fails.md` (content folded into README/ARCHITECTURE).
+- Compatibility floor documented as `@earendil-works/pi-coding-agent` ≥ 0.84.3.
+
+### Tests
+
+- Regression suite at 93 tests.
+
 ## [0.2.0]
 
 Architecture refactor (R1–R6) plus the remaining robustness backlog. The
