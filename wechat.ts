@@ -17,14 +17,12 @@ import { MessageItemType } from "./api/types.js";
 import * as storage from "./storage/state.js";
 import { sendTyping, getConfig } from "./api/api.js";
 import type { WeixinApiOptions } from "./api/api.js";
-import { randomUUID } from "node:crypto";
-import { writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { getMediaStoragePath, isDebugEnabled } from "./config.js";
-import { downloadMediaFromItem } from "./media/media-download.js";
+import { isDebugEnabled } from "./config.js";
+import { MediaStore } from "./media-store.js";
+import { formatTimestamp } from "./time.js";
 import { PollingLoop } from "./polling.js";
 import type { ConnectionState } from "./polling.js";
-import { TurnQueue } from "./queue.js";
+import { TurnQueue, SerialTaskQueue } from "./queue.js";
 
 // 保持对外导出兼容（ConnectionState 现已迁至 polling.ts）
 export type { ConnectionState } from "./polling.js";
@@ -35,153 +33,6 @@ function debugLog(message: string, ...args: unknown[]): void {
   if (isDebugEnabled()) {
     console.log(`[Wechat] ${message}`, ...args);
   }
-}
-
-// ============== 媒体存储配置 ==============
-
-/**
- * 获取 ISO 周数
- */
-function getISOWeek(date: Date): number {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
-  const dayNum = d.getUTCDay() || 7;
-  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
-}
-
-/**
- * 获取当前 ISO 周文件夹名称，格式: {year}{week} (如 "2605")
- */
-function getCurrentWeekFolder(): string {
-  const now = new Date();
-  const year = now.getFullYear();
-  const week = getISOWeek(now);
-  return `${String(year).slice(-2)}${String(week).padStart(2, '0')}`;
-}
-
-/**
- * 统一时间戳工具：YYMMDDHHMMSSmmm (17位，本地时间)。
- * requestId 与媒体文件名共用，避免重复实现。
- */
-function formatTimestamp(date: Date): string {
-  const yy = String(date.getFullYear()).slice(-2);
-  const mm = String(date.getMonth() + 1).padStart(2, '0');
-  const dd = String(date.getDate()).padStart(2, '0');
-  const hh = String(date.getHours()).padStart(2, '0');
-  const min = String(date.getMinutes()).padStart(2, '0');
-  const ss = String(date.getSeconds()).padStart(2, '0');
-  const ms = String(date.getMilliseconds()).padStart(3, '0');
-  return `${yy}${mm}${dd}${hh}${min}${ss}${ms}`;
-}
-
-/**
- * 保存媒体文件到存储
- * 路径: {mediaStoragePath}/{year}{week}/{timestamp}_{uuid8}.{ext}
- */
-function saveMediaToStorage(buffer: Buffer, ext: string): string {
-  const basePath = getMediaStoragePath();
-  const weekFolder = getCurrentWeekFolder();
-  const targetDir = join(basePath, weekFolder);
-
-  if (!existsSync(targetDir)) {
-    mkdirSync(targetDir, { recursive: true });
-  }
-
-  const filename = `${formatTimestamp(new Date())}_${randomUUID().slice(0, 8)}.${ext}`;
-  const filepath = join(targetDir, filename);
-  writeFileSync(filepath, buffer);
-  return filepath;
-}
-
-/**
- * MIME 类型到扩展名的映射
- */
-const CONTENT_TYPE_EXT_MAP: Record<string, string> = {
-  "image/jpeg": "jpg",
-  "image/jpg": "jpg",
-  "image/png": "png",
-  "image/gif": "gif",
-  "image/webp": "webp",
-  "image/bmp": "bmp",
-  "audio/wav": "wav",
-  "audio/silk": "silk",
-  "audio/mp3": "mp3",
-  "audio/ogg": "ogg",
-  "video/mp4": "mp4",
-  "video/quicktime": "mov",
-  "video/webm": "webm",
-};
-
-/**
- * 根据文件头魔数（Magic Bytes）检测文件类型
- */
-function detectFileType(buffer: Buffer): string | null {
-  if (buffer.length < 4) return null;
-
-  // JPEG: FF D8 FF
-  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
-    return "jpg";
-  }
-  // PNG: 89 50 4E 47
-  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
-    return "png";
-  }
-  // GIF: 47 49 46 38
-  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) {
-    return "gif";
-  }
-  // WebP: 52 49 46 46 ... 57 45 42 50 (RIFF....WEBP)
-  if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46) {
-    if (buffer.length >= 8 && buffer[4] === 0x57 && buffer[5] === 0x45 && buffer[6] === 0x42 && buffer[7] === 0x50) {
-      return "webp";
-    }
-  }
-  // BMP: 42 4D
-  if (buffer[0] === 0x42 && buffer[1] === 0x4D) {
-    return "bmp";
-  }
-  // MP4/QuickTime: 66 74 79 70 (ftyp)
-  if (buffer[0] === 0x66 && buffer[1] === 0x74 && buffer[2] === 0x79 && buffer[3] === 0x70) {
-    return "mp4";
-  }
-  // SILK: 02 开头
-  if (buffer[0] === 0x02) {
-    return "silk";
-  }
-  // OGG: 4F 67 67 53 (OggS)
-  if (buffer[0] === 0x4F && buffer[1] === 0x67 && buffer[2] === 0x67 && buffer[3] === 0x53) {
-    return "ogg";
-  }
-
-  return null;
-}
-
-/**
- * SaveMediaFn 回调实现（用于 downloadMediaFromItem）
- */
-type SaveMediaFn = (
-  buffer: Buffer,
-  contentType?: string,
-  subdir?: string,
-  maxBytes?: number,
-  originalFilename?: string,
-) => Promise<{ path: string }>;
-
-function createSaveMediaCallback(): SaveMediaFn {
-  return async (buffer, contentType, _subdir, _maxBytes, originalFilename) => {
-    let ext: string;
-    if (originalFilename) {
-      ext = originalFilename.split('.').pop() ?? 'bin';
-    } else if (contentType) {
-      ext = CONTENT_TYPE_EXT_MAP[contentType] ?? 'bin';
-    } else {
-      // 尝试通过魔数检测
-      ext = detectFileType(buffer) ?? 'bin';
-    }
-    const path = saveMediaToStorage(buffer, ext);
-    return { path };
-  };
 }
 
 // ============== 宿主依赖（依赖注入）==============
@@ -241,6 +92,15 @@ export class WechatEngine {
 
   // === 消息队列 / 忙闲 / 去重（抽到 TurnQueue）===
   private queue = new TurnQueue<{ msg: WeixinMessage; requestId: string }>();
+
+  // === 媒体存储 / 后台串行队列（B5：媒体下载不阻塞轮询）===
+  private mediaStore = new MediaStore({
+    log: (...a: unknown[]) => debugLog(String(a[0] ?? ""), ...a.slice(1)),
+    errLog: console.error,
+  });
+  private mediaQueue = new SerialTaskQueue((err) =>
+    console.error("[Wechat] Media background task failed:", err),
+  );
 
   // === Typing 相关（单用户）===
   private typingTicketCache: { ticket: string; expiresAt: number; contextToken: string } | null = null;
@@ -404,54 +264,14 @@ export class WechatEngine {
     const hasMedia = msg.item_list?.some(item => item.type !== MessageItemType.TEXT);
 
     if (hasMedia && !hasText) {
-      debugLog(`Media message detected, downloading...`);
+      debugLog(`Media message detected, acknowledging and processing in background...`);
 
-      const saveMedia = createSaveMediaCallback();
-      const mediaPaths: string[] = [];
+      // B5：立即 ack（不含路径），下载/落盘放到后台串行队列，不阻塞轮询主循环。
+      await this.sendTextMessage("媒体文件已收到，正在保存…");
 
-      for (const item of msg.item_list ?? []) {
-        if (item.type === MessageItemType.TEXT) continue;
-
-        try {
-          const result = await downloadMediaFromItem(item, {
-            cdnBaseUrl: opts.baseUrl,
-            saveMedia,
-            log: debugLog,
-            errLog: console.error,
-            label: `media-${item.type}`,
-          });
-
-          const savedPath =
-            result.decryptedPicPath ??
-            result.decryptedVoicePath ??
-            result.decryptedFilePath ??
-            result.decryptedVideoPath;
-
-          if (savedPath) {
-            mediaPaths.push(savedPath);
-            debugLog(`Media saved: ${savedPath}`);
-          }
-        } catch (err) {
-          console.error(`[Wechat] Media download failed for type ${item.type}:`, err);
-        }
-      }
-
-      // 回复用户并加入历史
-      if (mediaPaths.length > 0) {
-        const replyText = `媒体文件已收到，成功保存到 ${mediaPaths[0]}`;
-        await this.sendTextMessage(replyText);
-
-        // 加入会话历史（不触发 AI 回复）
-        const host = this.host;
-        if (!host) throw new Error("WechatHost not configured");
-        host.sendMessage(
-          { customType: "wechat_media", content: replyText, display: false },
-          { triggerTurn: false, deliverAs: "followUp" },
-        );
-      }
+      this.mediaQueue.enqueue(() => this.processMediaInBackground(msg, requestId, opts));
 
       // 标记处理完成并退出
-      this.queue.setBusy(false);
       this.markRequestProcessed(requestId);
 
       // 处理队列中的下一条
@@ -501,6 +321,32 @@ export class WechatEngine {
           void this.safelyTriggerNext();
         }
       }
+    }
+  }
+
+  /**
+   * B5：后台串行处理媒体下载/落盘，完成后写入会话历史（含保存路径）。
+   * 外层 try/catch 保证不向调用方抛出。
+   */
+  private async processMediaInBackground(
+    msg: WeixinMessage,
+    requestId: string,
+    opts: { baseUrl: string; token: string },
+  ): Promise<void> {
+    try {
+      const paths = await this.mediaStore.downloadAll(msg.item_list ?? [], opts.baseUrl);
+
+      if (paths.length > 0) {
+        const host = this.host;
+        if (!host) throw new Error("WechatHost not configured");
+
+        host.sendMessage(
+          { customType: "wechat_media", content: `媒体文件已保存到 ${paths[0]}`, display: false },
+          { triggerTurn: false, deliverAs: "followUp" },
+        );
+      }
+    } catch (err) {
+      console.error(`[Wechat] processMediaInBackground failed (requestId=${requestId}):`, err);
     }
   }
 
