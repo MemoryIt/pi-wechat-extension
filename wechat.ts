@@ -33,6 +33,12 @@ import { downloadMediaFromItem } from "./media/media-download.js";
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 
+/**
+ * 轮询中止哨兵：用于区分「主动 stopPolling」与真实网络错误。
+ * 底层 getUpdates 不接受 AbortSignal，核心层改用 Promise.race 抢跑中止。
+ */
+const POLL_ABORTED = Symbol("wechat-poll-aborted");
+
 // ============== 调试日志辅助函数 ==============
 
 function debugLog(message: string, ...args: unknown[]): void {
@@ -65,17 +71,17 @@ function getCurrentWeekFolder(): string {
 }
 
 /**
- * 生成文件时间戳格式: YYYYMMDDHHMMSSmmm (17位)
+ * 统一时间戳工具：YYMMDDHHMMSSmmm (17位，本地时间)。
+ * requestId 与媒体文件名共用，避免重复实现。
  */
-function generateFileTimestamp(): string {
-  const now = new Date();
-  const yy = String(now.getFullYear()).slice(-2);
-  const mm = String(now.getMonth() + 1).padStart(2, '0');
-  const dd = String(now.getDate()).padStart(2, '0');
-  const hh = String(now.getHours()).padStart(2, '0');
-  const min = String(now.getMinutes()).padStart(2, '0');
-  const ss = String(now.getSeconds()).padStart(2, '0');
-  const ms = String(now.getMilliseconds()).padStart(3, '0');
+function formatTimestamp(date: Date): string {
+  const yy = String(date.getFullYear()).slice(-2);
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const min = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  const ms = String(date.getMilliseconds()).padStart(3, '0');
   return `${yy}${mm}${dd}${hh}${min}${ss}${ms}`;
 }
 
@@ -92,7 +98,7 @@ function saveMediaToStorage(buffer: Buffer, ext: string): string {
     mkdirSync(targetDir, { recursive: true });
   }
 
-  const filename = `${generateFileTimestamp()}_${randomUUID().slice(0, 8)}.${ext}`;
+  const filename = `${formatTimestamp(new Date())}_${randomUUID().slice(0, 8)}.${ext}`;
   const filepath = join(targetDir, filename);
   writeFileSync(filepath, buffer);
   return filepath;
@@ -222,6 +228,10 @@ export class WechatEngine {
   private consecutiveFailures = 0;
   private accountId: string | null = null;
 
+  // === 轮询会话控制（重入守卫 + 过期结果丢弃）===
+  private pollingActive = false;
+  private pollingGeneration = 0;
+
   // === 单用户凭证（运行时加载）===
   private singleUserId: string | null = null;
   private singleContextToken: string | null = null;
@@ -230,6 +240,8 @@ export class WechatEngine {
   private currentRequestId: string | null = null;
   private processedRequests = new Map<string, number>();
   private cleanupCounter = 0;
+  private lastRequestIdMs = -1;
+  private requestIdSeq = 0;
 
   // === AI 处理状态 ===
   private isAiProcessing = false;
@@ -241,7 +253,7 @@ export class WechatEngine {
   private pendingMessages: Array<{ msg: WeixinMessage; requestId: string }> = [];
 
   // === Typing 相关（单用户）===
-  private typingTicketCache: { ticket: string; expiresAt: number } | null = null;
+  private typingTicketCache: { ticket: string; expiresAt: number; contextToken: string } | null = null;
   private typingKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private readonly TYPING_KEEPALIVE_INTERVAL_MS = 8000;
   private readonly TYPING_TICKET_CACHE_TTL_MS = 60_000;
@@ -289,6 +301,10 @@ export class WechatEngine {
 
   /**
    * 停止长轮询
+   *
+   * 记录停止动作（abort），使 startPolling 内的 Promise.race 立即抢跑退出。
+   * 注意：底层 getUpdates 不接受 AbortSignal，因此在途请求仍会在后台直到超时
+   * （35s）才结束；但核心层不再等待它，轮询循环会迅速退出。
    */
   stopPolling(): void {
     this.abortController.abort();
@@ -296,62 +312,119 @@ export class WechatEngine {
   }
 
   /**
+   * 构造「收到 abort 即 reject(POLL_ABORTED)」的 promise，并返回解除监听的函数。
+   */
+  private createAbortWaiter(signal: AbortSignal): { promise: Promise<never>; dispose: () => void } {
+    let onAbort: (() => void) | null = null;
+    const promise = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(POLL_ABORTED);
+      if (signal.aborted) {
+        onAbort();
+      } else {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+    });
+    return {
+      promise,
+      dispose: () => {
+        if (onAbort) signal.removeEventListener("abort", onAbort);
+      },
+    };
+  }
+
+  /**
    * 启动长轮询
+   *
+   * 重入守卫：若已有轮询会话在运行，直接返回，绝不并发第二条循环。
+   * generation 令牌：reset()/新会话会让旧令牌过期，旧循环拿到过期结果后直接丢弃，
+   * 避免污染新会话状态。
    */
   async startPolling(opts: { baseUrl: string; token: string }): Promise<void> {
+    if (this.pollingActive) {
+      debugLog("startPolling ignored: polling is already active");
+      return;
+    }
+    this.pollingActive = true;
+    const generation = ++this.pollingGeneration;
+
     if (this.abortController.signal.aborted) {
       this.abortController = new AbortController();
     }
     const abortSignal = this.abortController.signal;
 
-    // 初始化单用户凭证
-    if (!await this.initSingleUser()) {
-      return;
-    }
+    try {
+      // 初始化单用户凭证
+      if (!(await this.initSingleUser())) {
+        return;
+      }
+      if (generation !== this.pollingGeneration) return;
 
-    // 加载 sync cursor
-    this.state.syncCursor = (await storage.loadSyncCursor(this.accountId!)) ?? "";
+      // 加载 sync cursor
+      this.state.syncCursor = (await storage.loadSyncCursor(this.accountId!)) ?? "";
 
-    while (!abortSignal.aborted) {
-      try {
-        const updates = await getUpdates({
-          get_updates_buf: this.state.syncCursor,
-          baseUrl: opts.baseUrl,
-          token: opts.token,
-          timeoutMs: DEFAULT_LONG_POLL_TIMEOUT_MS,
-        });
+      while (!abortSignal.aborted) {
+        if (generation !== this.pollingGeneration) break;
 
-        for (const msg of updates.msgs ?? []) {
-          await this.handleMessage(msg, opts);
+        // 在途请求与 abort 抢跑：stopPolling 后循环迅速退出。
+        // 在途 getUpdates 仍在后台直到自身超时（底层不支持 AbortSignal）。
+        const abortWaiter = this.createAbortWaiter(abortSignal);
+        try {
+          const updates = await Promise.race([
+            getUpdates({
+              get_updates_buf: this.state.syncCursor,
+              baseUrl: opts.baseUrl,
+              token: opts.token,
+              timeoutMs: DEFAULT_LONG_POLL_TIMEOUT_MS,
+            }),
+            abortWaiter.promise,
+          ]);
+
+          if (generation !== this.pollingGeneration) break;
+
+          for (const msg of updates.msgs ?? []) {
+            if (abortSignal.aborted || generation !== this.pollingGeneration) break;
+            await this.handleMessage(msg, opts);
+          }
+
+          // 更新并持久化 cursor
+          this.state.syncCursor = updates.get_updates_buf ?? this.state.syncCursor;
+          if (this.accountId) {
+            await storage.saveSyncCursor(this.accountId, this.state.syncCursor);
+          }
+
+          this.consecutiveFailures = 0;
+          this.state.connectionState = "connected";
+        } catch (error: unknown) {
+          // 主动停止 / 过期会话：直接退出，不当作轮询失败
+          if (error === POLL_ABORTED || abortSignal.aborted || generation !== this.pollingGeneration) {
+            debugLog("Polling loop aborted, exiting");
+            break;
+          }
+
+          if (this.isSessionExpiredError(error)) {
+            this.state.connectionState = "needs_relogin";
+            console.error("[Wechat] Session expired, needs relogin");
+            return;
+          }
+
+          this.consecutiveFailures++;
+          this.state.connectionState = "error";
+          const errMsg = error instanceof Error ? error.message : String(error);
+          console.error(`[Wechat] Poll error (attempt ${this.consecutiveFailures}):`, errMsg);
+
+          const delay = Math.min(2000 * this.consecutiveFailures, 30_000);
+          await this.sleep(delay);
+        } finally {
+          abortWaiter.dispose();
         }
-
-        // 更新并持久化 cursor
-        this.state.syncCursor = updates.get_updates_buf ?? this.state.syncCursor;
-        if (this.accountId) {
-          await storage.saveSyncCursor(this.accountId, this.state.syncCursor);
-        }
-
-        this.consecutiveFailures = 0;
-        this.state.connectionState = "connected";
-
-      } catch (error: unknown) {
-        if (this.isSessionExpiredError(error)) {
-          this.state.connectionState = "needs_relogin";
-          console.error("[Wechat] Session expired, needs relogin");
-          return;
-        }
-
-        this.consecutiveFailures++;
-        this.state.connectionState = "error";
-        const errMsg = error instanceof Error ? error.message : String(error);
-        console.error(`[Wechat] Poll error (attempt ${this.consecutiveFailures}):`, errMsg);
-
-        const delay = Math.min(2000 * this.consecutiveFailures, 30_000);
-        await this.sleep(delay);
+      }
+    } finally {
+      // 只有当前会话仍是最新时才释放守卫，避免旧循环误清新会话
+      if (generation === this.pollingGeneration) {
+        this.pollingActive = false;
+        this.state.connectionState = "disconnected";
       }
     }
-
-    this.state.connectionState = "disconnected";
   }
 
   /**
@@ -371,6 +444,8 @@ export class WechatEngine {
     if (msg.context_token && msg.context_token !== this.singleContextToken) {
       debugLog(`Updating contextToken from message`);
       this.singleContextToken = msg.context_token;
+      // contextToken 变化后旧 typing ticket 立即失效
+      this.typingTicketCache = null;
       // 持久化
       if (this.accountId && this.singleUserId) {
         await storage.saveContextToken(this.accountId, this.singleUserId, {
@@ -469,43 +544,77 @@ export class WechatEngine {
     // === 文本消息处理 ===
     this.currentRequestId = requestId;
     this.isAiProcessing = true;
+    let handedOffToAgent = false;
 
-    debugLog(`triggerAi: requestId=${requestId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
+    try {
+      debugLog(`triggerAi: requestId=${requestId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
 
-    // 写入 wechat_meta（仅 requestId）
-    (pi.appendEntry as (type: string, data: unknown) => void)("wechat_meta", {
-      requestId,
-    });
+      // 写入 wechat_meta（仅 requestId）—— pi 调用可能同步抛错
+      (pi.appendEntry as (type: string, data: unknown) => void)("wechat_meta", {
+        requestId,
+      });
 
-    // 直接获取文本内容
-    const textParts: string[] = [];
-    for (const item of msg.item_list ?? []) {
-      if (item.type === MessageItemType.TEXT) {
-        textParts.push(item.text_item?.text ?? "");
+      // 直接获取文本内容
+      const textParts: string[] = [];
+      for (const item of msg.item_list ?? []) {
+        if (item.type === MessageItemType.TEXT) {
+          textParts.push(item.text_item?.text ?? "");
+        }
+      }
+      const content = textParts.join("\n");
+
+      // 同步抛错或 await 期间 reject 都必须在这里被捕获，不得冒泡成「轮询失败」
+      await (pi.sendUserMessage as (content: string, opts?: unknown) => Promise<void>)(content, {
+        deliverAs: "followUp",
+      });
+      handedOffToAgent = true;
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[Wechat] triggerAiInternal failed (requestId=${requestId}):`, errMsg);
+      this.markRequestProcessed(requestId);
+    } finally {
+      // 错误路径：无论从哪个 await 抛出都必须释放处理锁并继续排空队列。
+      // 成功路径保持 isAiProcessing=true，等待 onAiDone() 通知本轮结束。
+      if (!handedOffToAgent) {
+        this.isAiProcessing = false;
+        this.currentRequestId = null;
+        if (this.pendingMessages.length > 0) {
+          void this.safelyTriggerNext();
+        }
       }
     }
-    const content = textParts.join("\n");
-
-    (pi.sendUserMessage as (content: string, opts?: unknown) => Promise<void>)(content, {
-      deliverAs: "followUp",
-    });
   }
 
   /**
-   * 检查是否是 slash command
+   * 提取消息中所有文本项拼接后的内容
+   */
+  private extractText(msg: WeixinMessage): string {
+    const parts: string[] = [];
+    for (const item of msg.item_list ?? []) {
+      if (item.type === MessageItemType.TEXT) {
+        parts.push(item.text_item?.text ?? "");
+      }
+    }
+    return parts.join("\n");
+  }
+
+  /**
+   * 检查是否是 slash command（遍历所有 item，不再只看首条 / 不再用魔法数字）
    */
   private isSlashCommand(msg: WeixinMessage): boolean {
-    if (msg.item_list?.[0]?.type !== 1) return false;
-    const text = msg.item_list[0].text_item?.text ?? "";
-    return text.trim().startsWith("/");
+    for (const item of msg.item_list ?? []) {
+      if (item.type !== MessageItemType.TEXT) continue;
+      const text = item.text_item?.text ?? "";
+      if (text.trim().startsWith("/")) return true;
+    }
+    return false;
   }
 
   /**
    * 处理 slash command
    */
   private async handleSlashCommand(msg: WeixinMessage, opts: { baseUrl: string; token: string }): Promise<void> {
-    const text = msg.item_list?.[0]?.text_item?.text ?? "";
-    const trimmed = text.trim();
+    const trimmed = this.extractText(msg).trim();
 
     if (trimmed === "/help") {
       await this.sendTextMessage("可用命令: /help");
@@ -527,36 +636,39 @@ export class WechatEngine {
 
   /**
    * 安全地触发下一条消息
+   *
+   * 必须 await 并 catch triggerAiInternal，否则排空时的 rejection 会变成未处理
+   * 拒绝并卡死 isAiProcessing。移除了基于错误字符串匹配的重试，避免无限递归。
    */
-  private safelyTriggerNext(retryCount = 0): void {
-    const MAX_RETRY = 3;
+  private async safelyTriggerNext(): Promise<void> {
     const BASE_DELAY = 20;
+    await this.sleep(BASE_DELAY);
 
-    setTimeout(() => {
-      if (this.pendingMessages.length === 0) {
-        this.isAiProcessing = false;
-        return;
-      }
+    if (this.pendingMessages.length === 0) {
+      this.isAiProcessing = false;
+      return;
+    }
 
-      try {
-        const { msg, requestId } = this.pendingMessages.shift()!;
-        debugLog(`Triggering next message (retry: ${retryCount})`);
-        const opts = this.getCurrentOpts();
-        if (opts) {
-          this.triggerAiInternal(msg, requestId, opts);
-        }
-      } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        if (errMsg.includes("already processing") && retryCount < MAX_RETRY) {
-          console.warn(`[Wechat] Agent still busy, retry ${retryCount + 1}/${MAX_RETRY}`);
-          this.safelyTriggerNext(retryCount + 1);
-        } else {
-          console.error(`[Wechat] Failed to process queued message: ${errMsg}`);
-          this.isAiProcessing = false;
-          this.safelyTriggerNext();
-        }
-      }
-    }, BASE_DELAY * Math.pow(1.5, retryCount));
+    const { msg, requestId } = this.pendingMessages.shift()!;
+    debugLog(`Triggering next message (queue size: ${this.pendingMessages.length})`);
+
+    const opts = this.getCurrentOpts();
+    if (!opts) {
+      console.error("[Wechat] Failed to process queued message: engine config missing");
+      this.isAiProcessing = false;
+      if (this.pendingMessages.length > 0) void this.safelyTriggerNext();
+      return;
+    }
+
+    try {
+      await this.triggerAiInternal(msg, requestId, opts);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[Wechat] Failed to process queued message: ${errMsg}`);
+      this.isAiProcessing = false;
+      this.currentRequestId = null;
+      if (this.pendingMessages.length > 0) void this.safelyTriggerNext();
+    }
   }
 
   private getCurrentOpts(): { baseUrl: string; token: string } | null {
@@ -573,8 +685,12 @@ export class WechatEngine {
       return null;
     }
 
-    // 检查缓存
-    if (this.typingTicketCache && Date.now() < this.typingTicketCache.expiresAt) {
+    // 检查缓存：必须与当前 contextToken 匹配，token 变化后旧 ticket 失效
+    if (
+      this.typingTicketCache &&
+      this.typingTicketCache.contextToken === this.singleContextToken &&
+      Date.now() < this.typingTicketCache.expiresAt
+    ) {
       return this.typingTicketCache.ticket;
     }
 
@@ -590,6 +706,7 @@ export class WechatEngine {
         this.typingTicketCache = {
           ticket: configResp.typing_ticket,
           expiresAt: Date.now() + this.TYPING_TICKET_CACHE_TTL_MS,
+          contextToken: this.singleContextToken,
         };
         return configResp.typing_ticket;
       }
@@ -646,6 +763,9 @@ export class WechatEngine {
       await this.sendTypingStatus(1);
     }, this.TYPING_KEEPALIVE_INTERVAL_MS);
 
+    // 不要让 keepalive timer 阻止进程退出
+    timer.unref?.();
+
     this.typingKeepaliveTimer = timer;
   }
 
@@ -686,8 +806,9 @@ export class WechatEngine {
   /**
    * 向微信发送本地文件 —— 直接使用官方 sendWeixinMediaFile（自动路由图片/视频/文件）
    */
-  async sendFileToUser(localPath: string, fileName?: string): Promise<void> {
-    // 当前实现已完美复用官方模块，保持不变
+  async sendFileToUser(localPath: string): Promise<void> {
+    // 底层 sendWeixinMediaFile 不支持自定义显示名，显示名以本地文件 basename 为准，
+    // 因此不再接收/透传 fileName。
     if (!localPath || typeof localPath !== "string") {
       throw new Error("sendFileToUser: localPath 不能为空");
     }
@@ -696,7 +817,7 @@ export class WechatEngine {
       throw new Error("Single user not initialized");
     }
 
-    const displayName = fileName || path.basename(localPath);
+    const displayName = path.basename(localPath);
     debugLog(`sendFileToUser START: localPath=${localPath}, displayName=${displayName} (使用官方 sendWeixinMediaFile)`);
 
     const opts: WeixinApiOptions & { contextToken?: string } = {
@@ -785,8 +906,16 @@ export class WechatEngine {
     this.processedRequests.clear();
     this.currentRequestId = null;
     this.isAiProcessing = false;
+    this.isTerminalMessageProcessing = false;
+    this.consecutiveFailures = 0;
     this.cleanupCounter = 0;
-    
+    this.lastRequestIdMs = -1;
+    this.requestIdSeq = 0;
+
+    // 让旧轮询会话的 generation 过期，丢弃其后续结果
+    this.pollingGeneration++;
+    this.pollingActive = false;
+
     // 停止并重建 AbortController
     this.abortController.abort();
     this.abortController = new AbortController();
@@ -806,19 +935,18 @@ export class WechatEngine {
   // ============== 工具方法 ==============
 
   /**
-   * 生成请求 ID（精确到毫秒）
-   * 格式: YYYYMMDDHHMMSSmmm (17位)
+   * 生成请求 ID
+   * 格式: YYMMDDHHMMSSmmm + 3 位同毫秒序号（保证同一毫秒内也唯一）
    */
   private generateRequestId(): string {
-    const now = new Date();
-    const yy = String(now.getFullYear()).slice(-2);
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
-    const dd = String(now.getDate()).padStart(2, '0');
-    const hh = String(now.getHours()).padStart(2, '0');
-    const min = String(now.getMinutes()).padStart(2, '0');
-    const ss = String(now.getSeconds()).padStart(2, '0');
-    const ms = String(now.getMilliseconds()).padStart(3, '0');
-    return `${yy}${mm}${dd}${hh}${min}${ss}${ms}`;
+    const now = Date.now();
+    if (now !== this.lastRequestIdMs) {
+      this.lastRequestIdMs = now;
+      this.requestIdSeq = 0;
+    } else {
+      this.requestIdSeq += 1;
+    }
+    return `${formatTimestamp(new Date(now))}${String(this.requestIdSeq).padStart(3, "0")}`;
   }
 
   private isSessionExpiredError(error: unknown): boolean {
