@@ -10,15 +10,26 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # 自托管 runner 的标签为 `docker`（全局 runner "portainer-dind"）
+    runs-on: docker
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: https://code.forgejo.org/actions/checkout@v4
 
       - name: Setup Bun
         run: |
-          curl -fsSL https://bun.sh/install | bash
+          set -e
+          if ! command -v bun >/dev/null 2>&1; then
+            if ! command -v unzip >/dev/null 2>&1; then
+              if command -v apt-get >/dev/null 2>&1; then
+                apt-get update && apt-get install -y unzip
+              fi
+            fi
+            curl -fsSL https://bun.sh/install | bash
+          fi
           echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+          "$HOME/.bun/bin/bun" --version
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
