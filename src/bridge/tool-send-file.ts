@@ -9,9 +9,9 @@ import { Type, type Static } from "@sinclair/typebox";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { WechatEngine } from "./wechat.js";
-import { isDebugEnabled } from "./config.js";
-import { createLogger } from "./logger.js";
+import type { WechatEngine } from "../engine/wechat.js";
+import { isDebugEnabled } from "../shared/config.js";
+import { createLogger } from "../shared/logger.js";
 
 const logger = createLogger({ isDebugEnabled: () => isDebugEnabled() });
 

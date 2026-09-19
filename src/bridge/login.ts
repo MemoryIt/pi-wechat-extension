@@ -6,13 +6,13 @@
  */
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "../auth/login-qr.js";
-import { saveToken, upsertAccount } from "./storage/state.js";
-import { setConfig } from "./wechat.js";
-import type { WechatEngine } from "./wechat.js";
-import { redactToken } from "../util/redact.js";
-import { isDebugEnabled } from "./config.js";
-import { createLogger } from "./logger.js";
+import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "../../auth/login-qr.js";
+import { saveToken, upsertAccount } from "../storage/state.js";
+import { setConfig } from "../engine/wechat.js";
+import type { WechatEngine } from "../engine/wechat.js";
+import { redactToken } from "../../util/redact.js";
+import { isDebugEnabled } from "../shared/config.js";
+import { createLogger } from "../shared/logger.js";
 
 const logger = createLogger({ isDebugEnabled: () => isDebugEnabled() });
 

@@ -8,7 +8,7 @@
  */
 import { test, expect } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { buildMetaInfo, accumulateCost } from "../../src/meta.js";
+import { buildMetaInfo, accumulateCost } from "../../src/bridge/meta.js";
 
 let usageReads = 0;
 

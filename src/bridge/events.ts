@@ -12,11 +12,11 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getDefaultAccountToken } from "./storage/state.js";
-import { setConfig } from "./wechat.js";
-import type { WechatEngine } from "./wechat.js";
-import { isDebugEnabled } from "./config.js";
-import { createLogger } from "./logger.js";
+import { getDefaultAccountToken } from "../storage/state.js";
+import { setConfig } from "../engine/wechat.js";
+import type { WechatEngine } from "../engine/wechat.js";
+import { isDebugEnabled } from "../shared/config.js";
+import { createLogger } from "../shared/logger.js";
 import {
   pushPendingWechatInput,
   resolveTurnBeforeRun,

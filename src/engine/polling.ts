@@ -6,8 +6,8 @@
  * PollingLoop 自身不直接依赖 storage、api 边界之外的模块。
  */
 
-import type { WeixinMessage } from "../api/types";
-import { getUpdates } from "../api/api.js";
+import type { WeixinMessage } from "../../api/types";
+import { getUpdates } from "../../api/api.js";
 
 export type ConnectionState =
   | "disconnected"

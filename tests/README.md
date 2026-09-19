@@ -17,7 +17,7 @@
 | R5 | 提取 `TypingController` / `MessageSender` | 复用既有 D14/D16/D16b 用例 |
 | R6 | 统一 `logger.ts` + 脱敏（B7） | `tests/unit/logger.test.ts` |
 | B1 | 拆分 `src/index.ts` → `bridge/turn/meta/commands/tool-send-file/login` | `tests/bridge/turn.test.ts`、`tests/bridge/meta.test.ts` |
-| B2 | 拆分 `src/wechat.ts` 的 turn 执行为 `src/router.ts` | `tests/engine/router.test.ts` |
+| B2 | 拆分 `src/engine/wechat.ts` 的 turn 执行为 `src/engine/router.ts` | `tests/engine/router.test.ts` |
 
 迁移注意：engine 内部字段（如 `typingTicketCache`、`pendingMessages`）已移入协作类，测试统一走 engine 公共方法；
 `tests/engine/queue.test.ts` / `media-store.test.ts` / `router.test.ts` 直接对纯模块做单测。
@@ -49,8 +49,8 @@ bun run typecheck                # tsc --noEmit（底层模块有 3 条既有 TS
 
 | 层 | 目录 | 被测对象 | 手法 |
 |---|---|---|---|
-| L1 纯逻辑 | `tests/unit` | `src/config.ts`、`src/storage/state.ts` | 真实模块 + mock `getAgentDir`/`logger`，临时目录 |
-| L2 引擎状态机 | `tests/engine` | `src/wechat.ts` 的 `WechatEngine` | `mock.module` 掉 api/messaging/media，可控返回值；storage/config 用真实实现 |
+| L1 纯逻辑 | `tests/unit` | `src/shared/config.ts`、`src/storage/state.ts` | 真实模块 + mock `getAgentDir`/`logger`，临时目录 |
+| L2 引擎状态机 | `tests/engine` | `src/engine/wechat.ts` 的 `WechatEngine` | `mock.module` 掉 api/messaging/media，可控返回值；storage/config 用真实实现 |
 | L3 事件桥接 | `tests/bridge` | `src/index.ts` | 探针型假 `ExtensionAPI` + 假 engine |
 
 ## 基础设施
@@ -99,7 +99,7 @@ bun run typecheck                # tsc --noEmit（底层模块有 3 条既有 TS
   - `media/silk-transcode.ts` → `silk-wasm`（可选依赖，缺失时降级）
   - `messaging/inbound.ts` → `../src/storage/state-dir.js`（仅 type-only 引用）
   - `messaging/send.ts` → `openclaw/plugin-sdk/reply-runtime`（type-only 私有包）
-- `src/config.ts` / `src/storage/state.ts` 的路径常量在 import 时求值，`getAgentDir()` 在测试进程内固定为同一临时目录，
+- `src/shared/config.ts` / `src/storage/state.ts` 的路径常量在 import 时求值，`getAgentDir()` 在测试进程内固定为同一临时目录，
   用例间通过清空目录内容实现隔离。
 
 ## 包作用域

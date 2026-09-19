@@ -16,7 +16,7 @@ const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf-8")) a
   devDependencies?: Record<string, string>;
 };
 
-const CORE_FILES = ["src/index.ts", "src/wechat.ts", "src/config.ts", "src/storage/state.ts"];
+const CORE_FILES = ["src/index.ts", "src/engine/wechat.ts", "src/shared/config.ts", "src/storage/state.ts"];
 
 function collectBareImports(): string[] {
   const specifiers = new Set<string>();

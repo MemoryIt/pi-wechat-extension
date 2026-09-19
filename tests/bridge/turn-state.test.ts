@@ -7,7 +7,7 @@
  *   D4  每轮 turn 身份在事件发生时同步解析，不再依赖 module 全局标记 + setTimeout
  *   D21 buildMetaInfo 增量累计成本，第二次 turn 不再重复读取旧 entry
  *
- * 注意：这里 mock 掉 ../../src/wechat.js，只验证 index.ts 自身的桥接逻辑，
+ * 注意：这里 mock 掉 ../../src/engine/wechat.js，只验证 index.ts 自身的桥接逻辑，
  * 不触碰底层模块，也不依赖真实 pi 运行时。
  */
 import { test, expect, mock, beforeEach } from "bun:test";
@@ -47,13 +47,13 @@ const engine = {
   sendFileToUser: mock(async () => {}),
 };
 
-// index.ts 用 "./wechat.js" 引入；同时注册 .ts 以保证解析匹配。
-mock.module(repoPath("src", "wechat.js"), () => ({
+// index.ts 用 "./engine/wechat.js" 引入；同时注册 .ts 以保证解析匹配。
+mock.module(repoPath("src", "engine", "wechat.js"), () => ({
   engine,
   setPi: mock(() => {}),
   setConfig: mock(() => {}),
 }));
-mock.module(repoPath("src", "wechat.ts"), () => ({
+mock.module(repoPath("src", "engine", "wechat.ts"), () => ({
   engine,
   setPi: mock(() => {}),
   setConfig: mock(() => {}),

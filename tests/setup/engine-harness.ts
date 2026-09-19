@@ -87,7 +87,7 @@ export function installEngineMocks(): void {
 // ---- 被测模块 / 依赖加载 --------------------------------------------------
 
 export async function importEngine() {
-  return await import("../../src/wechat.js");
+  return await import("../../src/engine/wechat.js");
 }
 
 export async function importStorage() {
@@ -95,7 +95,7 @@ export async function importStorage() {
 }
 
 export async function importConfig() {
-  return await import("../../src/config.js");
+  return await import("../../src/shared/config.js");
 }
 
 // ---- fake pi --------------------------------------------------------------
