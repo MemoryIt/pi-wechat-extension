@@ -26,7 +26,7 @@ export function repoPath(...segments: string[]): string {
 }
 
 /**
- * 被测代码通过 @mariozechner/pi-coding-agent 的 getAgentDir() 决定存储位置。
+ * 被测代码通过 @earendil-works/pi-coding-agent 的 getAgentDir() 决定存储位置。
  * 这里固定成一个临时目录，整个测试进程共用（模块级路径常量在 import 时求值）。
  */
 export const agentDir = {
@@ -56,7 +56,7 @@ export function installBaseMocks(): void {
   installed = true;
 
   // config.ts / storage/state.ts 依赖 getAgentDir()。
-  mock.module("@mariozechner/pi-coding-agent", () => ({
+  mock.module("@earendil-works/pi-coding-agent", () => ({
     getAgentDir: () => agentDir.value,
     CONFIG_DIR_NAME: ".pi",
   }));

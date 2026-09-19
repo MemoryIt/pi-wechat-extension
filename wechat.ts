@@ -11,7 +11,7 @@
 import path from "node:path";
 import { sendWeixinMediaFile } from "./messaging/send-media.js";
 import { sendMessageWeixin } from "./messaging/send.js";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { WeixinMessage } from "./api/types";
 import { MessageItemType } from "./api/types.js";
 import * as storage from "./storage/state.js";
@@ -524,9 +524,9 @@ export class WechatEngine {
         await this.sendTextMessage(replyText);
 
         // 加入会话历史（不触发 AI 回复）
-        (pi.sendMessage as (msg: unknown, opts?: unknown) => Promise<void>)(
-          { content: replyText },
-          { triggerTurn: false, deliverAs: "followUp" }
+        pi.sendMessage(
+          { customType: "wechat_media", content: replyText, display: false },
+          { triggerTurn: false, deliverAs: "followUp" },
         );
       }
 
@@ -550,9 +550,7 @@ export class WechatEngine {
       debugLog(`triggerAi: requestId=${requestId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
 
       // 写入 wechat_meta（仅 requestId）—— pi 调用可能同步抛错
-      (pi.appendEntry as (type: string, data: unknown) => void)("wechat_meta", {
-        requestId,
-      });
+      pi.appendEntry("wechat_meta", { requestId });
 
       // 直接获取文本内容
       const textParts: string[] = [];
@@ -563,10 +561,8 @@ export class WechatEngine {
       }
       const content = textParts.join("\n");
 
-      // 同步抛错或 await 期间 reject 都必须在这里被捕获，不得冒泡成「轮询失败」
-      await (pi.sendUserMessage as (content: string, opts?: unknown) => Promise<void>)(content, {
-        deliverAs: "followUp",
-      });
+      // sendUserMessage 为同步 void：同步抛错必须在这里被捕获，不得冒泡成「轮询失败」
+      pi.sendUserMessage(content, { deliverAs: "followUp" });
       handedOffToAgent = true;
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);

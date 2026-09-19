@@ -16,7 +16,7 @@
 
 import { readFileSync, writeFileSync, chmodSync, mkdirSync, existsSync, unlinkSync, rmSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { logger } from "../util/logger.js";
 
 // ============== 类型定义 ==============
@@ -181,9 +181,6 @@ function getAccountsIndexPath(): string {
   return join(BASE_DIR, "accounts.json");
 }
 
-/**
- * 获取所有已注册账号列表
- */
 /**
  * 同步读取账号索引（内部使用）
  */

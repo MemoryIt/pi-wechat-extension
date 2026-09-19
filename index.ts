@@ -10,10 +10,16 @@
  *   `agent_end` 只负责 typing 收敛与终端标志兜底。
  */
 
-import { Type } from "@sinclair/typebox";
+import { Type, type Static } from "@sinclair/typebox";
 import path from "node:path";
 import { existsSync } from "node:fs";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type {
+  AgentToolResult,
+  ExtensionAPI,
+  ExtensionCommandContext,
+  ExtensionContext,
+  ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "./auth/login-qr.js";
 import { saveToken, upsertAccount, deleteAccountData, removeAccount, getDefaultAccountToken } from "./storage/state.js";
 import { engine, setPi, setConfig } from "./wechat.js";
@@ -58,38 +64,44 @@ export default function (pi: ExtensionAPI) {
   setPi(pi);
 
   // ============== 注册 Tool：允许 AI 发送文件 ==============
-  pi.registerTool({
+  const sendFileParams = Type.Object({
+    localPath: Type.String({
+      description: "必须填写：Pi 本地文件的**完整绝对路径**（例如 /Users/mou/code/pi-dev/Agent.pptx）",
+    }),
+  });
+
+  const sendFileTool: ToolDefinition<typeof sendFileParams> = {
     name: "send_wechat_file",
+    label: "Send WeChat file",
     description:
       "向当前微信用户发送本地文件。必须提供文件的**完整绝对路径**（如 /Users/mou/code/pi-dev/Agent.pptx）。" +
       "支持任意文件类型（pptx、pdf、jpg、png 等）。微信端将以该文件的本地文件名作为显示名。",
-    parameters: Type.Object({
-      localPath: Type.String({
-        description: "必须填写：Pi 本地文件的**完整绝对路径**（例如 /Users/mou/code/pi-dev/Agent.pptx）",
-      }),
-    }),
-    execute: async (toolCallId: string, params: unknown) => {
+    parameters: sendFileParams,
+    execute: async (
+      toolCallId: string,
+      params: Static<typeof sendFileParams>,
+    ): Promise<AgentToolResult<unknown>> => {
       debugLog(`send_wechat_file tool called - toolCallId=${toolCallId}, params=`, JSON.stringify(params));
 
       if (!params || typeof params !== "object") {
         const errMsg = "工具调用参数错误：请提供 localPath 参数";
         debugLog(errMsg);
-        return { content: [{ type: "text", text: errMsg }], isError: true };
+        throw new Error(errMsg);
       }
 
-      const { localPath } = params as { localPath?: string };
+      const { localPath } = params;
 
       if (!localPath || typeof localPath !== "string" || localPath.trim() === "") {
         const errMsg = "必须提供 localPath 参数（文件的完整绝对路径）。例如：/Users/mou/code/pi-dev/Agent.pptx";
         debugLog(errMsg);
-        return { content: [{ type: "text", text: errMsg }], isError: true };
+        throw new Error(errMsg);
       }
 
       const trimmedPath = localPath.trim();
       if (!existsSync(trimmedPath)) {
         const errMsg = `文件不存在: ${trimmedPath} （请确认路径是否正确，且文件在当前工作目录或指定绝对路径下）`;
         debugLog(errMsg);
-        return { content: [{ type: "text", text: errMsg }], isError: true };
+        throw new Error(errMsg);
       }
 
       // 底层 sendFileToUser 不再支持自定义显示名，以本地文件名为准。
@@ -100,14 +112,17 @@ export default function (pi: ExtensionAPI) {
         await engine.sendFileToUser(trimmedPath);
         const successMsg = `文件 "${displayName}" 已成功发送至微信`;
         debugLog(successMsg);
-        return { content: [{ type: "text", text: successMsg }] };
+        return { content: [{ type: "text", text: successMsg }], details: {} };
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
         debugLog(`sendFileToUser 执行失败:`, errMsg);
-        return { content: [{ type: "text", text: `发送文件失败: ${errMsg}` }], isError: true };
+        // SDK 约定：工具失败需通过 throw 上报（结果会带上 isError=true）。
+        throw new Error(`发送文件失败: ${errMsg}`);
       }
     },
-  });
+  };
+
+  pi.registerTool(sendFileTool);
 
   // ============== 注册命令 ==============
 

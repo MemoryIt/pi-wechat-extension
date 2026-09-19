@@ -16,7 +16,7 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "latest",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
     "@types/node": "^25.5.2",
     "@types/qrcode-terminal": "^0.12.2",
     "typescript": "^5.8.0"
