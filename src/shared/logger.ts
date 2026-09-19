@@ -9,7 +9,7 @@
  * - 前缀 + child(scope) 形成作用域，例如 "[Wechat][typing] "。
  */
 
-import { redactToken, redactBody, redactUrl } from "../util/redact.js";
+import { redactToken, redactBody, redactUrl } from "../../util/redact.js";
 export { redactToken, redactBody, redactUrl };
 
 export type LogLevel = "debug" | "info" | "warn" | "error";

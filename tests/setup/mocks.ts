@@ -8,7 +8,7 @@
  * - 由于 ESM 静态 import 会被提升，测试文件里应：
  *     import { installBaseMocks } from "../setup/mocks";
  *     installBaseMocks();
- *     const mod = await import("../../src/config.js");   // 动态 import
+ *     const mod = await import("../../src/shared/config.js");   // 动态 import
  *
  * 说明：这些 mock 只在测试运行时生效，不会读写仓库里底层模块的实现，也不修改生产代码。
  */

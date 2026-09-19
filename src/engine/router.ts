@@ -10,12 +10,12 @@
  * 不直接持有 WechatEngine，便于单测。
  */
 
-import { MessageItemType } from "../api/types.js";
-import type { WeixinMessage } from "../api/types.js";
+import { MessageItemType } from "../../api/types.js";
+import type { WeixinMessage } from "../../api/types.js";
 import type { TurnQueue, SerialTaskQueue } from "./queue.js";
 import type { MediaStore } from "./media-store.js";
 import type { MessageSender } from "./sender.js";
-import type { PluginLogger } from "./logger.js";
+import type { PluginLogger } from "../shared/logger.js";
 import type { WechatHost } from "./wechat.js";
 
 export type RouterTurnOptions = { baseUrl: string; token: string };

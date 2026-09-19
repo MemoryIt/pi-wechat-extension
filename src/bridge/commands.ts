@@ -5,9 +5,9 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getDefaultAccountToken, deleteAccountData, removeAccount } from "./storage/state.js";
-import { setConfig } from "./wechat.js";
-import type { WechatEngine } from "./wechat.js";
+import { getDefaultAccountToken, deleteAccountData, removeAccount } from "../storage/state.js";
+import { setConfig } from "../engine/wechat.js";
+import type { WechatEngine } from "../engine/wechat.js";
 import { performWechatLogin } from "./login.js";
 
 export function registerCommands(pi: ExtensionAPI, engine: WechatEngine): void {

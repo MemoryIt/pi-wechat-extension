@@ -7,7 +7,7 @@
  * - ticket 失效/失败时清缓存
  */
 
-import { getConfig, sendTyping } from "../api/api.js";
+import { getConfig, sendTyping } from "../../api/api.js";
 
 export interface TypingCredentials {
   baseUrl: string;

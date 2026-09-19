@@ -9,12 +9,12 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { WeixinMessage } from "../api/types";
-import { MessageItemType } from "../api/types.js";
-import * as storage from "./storage/state.js";
-import { isDebugEnabled } from "./config.js";
+import type { WeixinMessage } from "../../api/types";
+import { MessageItemType } from "../../api/types.js";
+import * as storage from "../storage/state.js";
+import { isDebugEnabled } from "../shared/config.js";
 import { MediaStore } from "./media-store.js";
-import { formatTimestamp } from "./time.js";
+import { formatTimestamp } from "../shared/time.js";
 import { PollingLoop } from "./polling.js";
 import type { ConnectionState } from "./polling.js";
 import { TurnQueue, SerialTaskQueue } from "./queue.js";
@@ -22,7 +22,7 @@ import { TypingController } from "./typing.js";
 import type { TypingCredentials } from "./typing.js";
 import { MessageSender } from "./sender.js";
 import { MessageRouter } from "./router.js";
-import { createLogger } from "./logger.js";
+import { createLogger } from "../shared/logger.js";
 
 // 保持对外导出兼容（ConnectionState 现已迁至 polling.ts）
 export type { ConnectionState } from "./polling.js";

@@ -120,8 +120,8 @@ export function installBridgeMocks(engine: BridgeEngine): void {
     setPi: setPiMock,
     setConfig: setConfigMock,
   });
-  mock.module(repoPath("src", "wechat.js"), wechatModule);
-  mock.module(repoPath("src", "wechat.ts"), wechatModule);
+  mock.module(repoPath("src", "engine", "wechat.js"), wechatModule);
+  mock.module(repoPath("src", "engine", "wechat.ts"), wechatModule);
 
   const authModule = () => ({
     startWeixinLoginWithQr: authMock.startWeixinLoginWithQr,

@@ -8,9 +8,9 @@
  */
 
 import path from "node:path";
-import { sendMessageWeixin } from "../messaging/send.js";
-import { sendWeixinMediaFile } from "../messaging/send-media.js";
-import type { WeixinApiOptions } from "../api/api.js";
+import { sendMessageWeixin } from "../../messaging/send.js";
+import { sendWeixinMediaFile } from "../../messaging/send-media.js";
+import type { WeixinApiOptions } from "../../api/api.js";
 import type { TypingCredentials } from "./typing.js";
 
 export interface SenderDeps {

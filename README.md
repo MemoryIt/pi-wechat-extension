@@ -219,21 +219,25 @@ onAiDone → 检查队列 → 触发下一条
 pi-wechat-extension/
 ├── src/                        # 自写核心模块
 │   ├── index.ts                # 插件入口（组合根）
-│   ├── bridge.ts               # pi.on 事件桥接 + agent_settled
-│   ├── commands.ts             # /wechat 命令注册
-│   ├── login.ts                # 扫码登录
-│   ├── tool-send-file.ts       # send_wechat_file 工具
-│   ├── turn.ts                 # turn 身份解析（近纯函数）
-│   ├── meta.ts                 # 模型元信息 / git 分支缓存
-│   ├── wechat.ts               # 引擎门面（单用户模式）
-│   ├── polling.ts              # PollingLoop：长轮询 / 退避 / abort
-│   ├── queue.ts                # TurnQueue + SerialTaskQueue
-│   ├── media-store.ts          # 媒体落盘 / 魔数识别 / 下载
-│   ├── typing.ts               # TypingController
-│   ├── sender.ts               # MessageSender
-│   ├── logger.ts               # 统一日志 + 脱敏
-│   ├── time.ts                 # 共享时间戳
-│   ├── config.ts               # 配置管理
+│   ├── engine/                 # 引擎层
+│   │   ├── wechat.ts           # 引擎门面（单用户模式）
+│   │   ├── polling.ts          # PollingLoop：长轮询 / 退避 / abort
+│   │   ├── queue.ts            # TurnQueue + SerialTaskQueue
+│   │   ├── media-store.ts      # 媒体落盘 / 魔数识别 / 下载
+│   │   ├── typing.ts           # TypingController
+│   │   ├── sender.ts           # MessageSender
+│   │   └── router.ts           # 消息路由 / turn 执行
+│   ├── bridge/                 # pi 事件桥接层
+│   │   ├── events.ts           # pi.on 事件桥接 + agent_settled
+│   │   ├── turn.ts             # turn 身份解析（近纯函数）
+│   │   ├── meta.ts             # 模型元信息 / git 分支缓存
+│   │   ├── commands.ts         # /wechat 命令注册
+│   │   ├── tool-send-file.ts   # send_wechat_file 工具
+│   │   └── login.ts            # 扫码登录
+│   ├── shared/                 # 共享基础模块
+│   │   ├── config.ts           # 配置管理
+│   │   ├── logger.ts           # 统一日志 + 脱敏
+│   │   └── time.ts             # 共享时间戳
 │   └── storage/
 │       ├── state.ts            # 持久化存储 + 单用户便捷函数
 │       └── state-dir.ts        # 状态目录解析
@@ -278,5 +282,5 @@ pi-wechat-extension/
 └── package.json
 ```
 
-> **说明**：`src/` 下的 `index.ts`、`wechat.ts` 及其拆分出的协作模块（`polling.ts`、`queue.ts`、`media-store.ts`、`typing.ts`、`sender.ts`、`logger.ts`、`time.ts`）、`config.ts`、`storage/state.ts` 是本插件自写的核心代码；`api/`、`auth/`、`cdn/`、`media/`、`messaging/`、`util/` 适配自 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)。
+> **说明**：`src/` 下的 `index.ts`，`engine/`（`wechat.ts`、`polling.ts`、`queue.ts`、`media-store.ts`、`typing.ts`、`sender.ts`、`router.ts`）、`bridge/`（`events.ts`、`turn.ts`、`meta.ts`、`commands.ts`、`tool-send-file.ts`、`login.ts`）、`shared/`（`config.ts`、`logger.ts`、`time.ts`）、`storage/state.ts` 是本插件自写的核心代码；`api/`、`auth/`、`cdn/`、`media/`、`messaging/`、`util/` 适配自 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)。
 

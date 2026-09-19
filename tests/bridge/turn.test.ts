@@ -17,7 +17,7 @@ import {
   pushPendingWechatInput,
   resetPendingWechatInputs,
   type BranchEntry,
-} from "../../src/turn.js";
+} from "../../src/bridge/turn.js";
 
 interface RawEntry extends BranchEntry {
   parentId?: string | null;

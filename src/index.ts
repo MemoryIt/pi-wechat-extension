@@ -11,10 +11,10 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { engine, setPi } from "./wechat.js";
-import { createSendFileTool } from "./tool-send-file.js";
-import { registerCommands } from "./commands.js";
-import { registerBridge } from "./bridge.js";
+import { engine, setPi } from "./engine/wechat.js";
+import { createSendFileTool } from "./bridge/tool-send-file.js";
+import { registerCommands } from "./bridge/commands.js";
+import { registerBridge } from "./bridge/events.js";
 
 export default function (pi: ExtensionAPI) {
   setPi(pi);

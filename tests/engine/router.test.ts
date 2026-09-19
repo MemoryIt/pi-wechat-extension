@@ -5,13 +5,13 @@
  * 不触碰底层边界，用 fake queue/mediaStore/mediaQueue/sender/host/logger。
  */
 import { test, expect, mock, beforeEach } from "bun:test";
-import { TurnQueue, SerialTaskQueue } from "../../src/queue.js";
-import { MessageRouter } from "../../src/router.js";
-import type { RouterDeps, RouterTurnOptions } from "../../src/router.js";
+import { TurnQueue, SerialTaskQueue } from "../../src/engine/queue.js";
+import { MessageRouter } from "../../src/engine/router.js";
+import type { RouterDeps, RouterTurnOptions } from "../../src/engine/router.js";
 import { MessageItemType } from "../../api/types.js";
 import type { WeixinMessage } from "../../api/types.js";
-import { createLogger } from "../../src/logger.js";
-import type { WechatHost } from "../../src/wechat.js";
+import { createLogger } from "../../src/shared/logger.js";
+import type { WechatHost } from "../../src/engine/wechat.js";
 
 const opts: RouterTurnOptions = { baseUrl: "https://example.com", token: "tok" };
 
