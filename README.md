@@ -7,8 +7,12 @@ https://github.com/user-attachments/assets/fdaf0e09-9fa5-491d-8507-464b0a5ec16d
 
 | 项目 | 版本 |
 |------|------|
-| pi | 0.65.2+ |
+| pi | `@earendil-works/pi-coding-agent` 0.85+ |
 | Node.js | >= 22 |
+
+> **包作用域**：插件面向 npm 上的 `@earendil-works/pi-coding-agent`（0.85.x）开发，
+> 使用其正式类型（`ExtensionAPI` / `ToolDefinition` / `AgentToolResult` 等）。
+> 开发依赖同样声明为该包；旧作用域 `@mariozechner/pi-coding-agent` 已不再使用。
 
 ## 已实现功能
 
@@ -16,10 +20,25 @@ https://github.com/user-attachments/assets/fdaf0e09-9fa5-491d-8507-464b0a5ec16d
 |------|------|------|
 | **登录及持久化** | 扫码一次，登录信息持久化保存，下次自动连接 | ✅ |
 | **双向消息发送** | 微信发消息 → pi 终端显示；AI 回复 → 微信收到 | ✅ |
+| **文件发送** | AI 通过 `send_wechat_file` 工具向微信发送本地文件 | ✅ |
 | **运行信息追加** | 文本消息后追加：所在目录、Git 分支、Token 使用、模型信息 | ✅ |
 
 
 
+
+## 依赖与包作用域
+
+- **运行依赖**：`qrcode-terminal`、`@sinclair/typebox`（工具参数 schema）。
+- **开发依赖**：`@earendil-works/pi-coding-agent`（SDK 类型与 `getAgentDir()`）、
+  `typescript`（`bun run typecheck`）、`@types/node`、`@types/qrcode-terminal`。
+- **包作用域统一**：仓库内所有对 pi SDK 的 import 与 `package.json` 声明统一为
+  `@earendil-works/pi-coding-agent`；不再引用旧的 `@mariozechner/pi-coding-agent`。
+
+```bash
+bun install        # 安装依赖
+bun run test       # 运行全套测试
+bun run typecheck  # tsc --noEmit 类型检查
+```
 
 ## 快速开始
 
@@ -75,11 +94,13 @@ pi 可通过 `send_wechat_file` 工具向微信用户发送本地文件：
   name: "send_wechat_file",
   description: "向当前微信用户发送本地文件。必须提供文件的完整绝对路径。",
   parameters: {
-    localPath: string,  // 必填，文件完整绝对路径
-    fileName: string    // 可选，微信显示的文件名
+    localPath: string  // 必填，文件完整绝对路径
   }
 }
 ```
+
+> **显示名**：微信端以本地文件的文件名（`path.basename(localPath)`）作为显示名，
+> 工具不再接受 `fileName` 参数，也无法自定义显示名。
 
 **使用示例**：
 ```
@@ -113,7 +134,8 @@ pi 可通过 `send_wechat_file` 工具向微信用户发送本地文件：
 | `debug` | boolean | `false` | 调试模式 |
 | `mediaStoragePath` | string | `{agentDir}/wechat/media` | 媒体文件存储路径 |
 
-**配置优先级**: 环境变量 > config.json > 默认值
+**配置优先级**: 环境变量 > config.json > 默认值。环境变量按字段**独立**覆盖：
+只显式设置了某个环境变量时，仅覆盖对应字段，config.json 中的其它字段保持生效。
 
 ## 工作流程
 
@@ -126,8 +148,11 @@ message_start → Typing Keepalive (每8秒刷新)
     ↓
 message_end → 停止 Typing
     ↓
-agent_end → 提取回复 → 发送至微信
+agent_settled → 提取本轮最终回复 → 发送至微信
 ```
+
+> 最终回复在 `agent_settled`（一轮全部结束、不会再有重试/压缩/续跑）时发送，
+> 保证只发一次且是最终版本；`agent_end` 仅用于 typing 收敛与终端标志兜底。
 
 
 
@@ -139,7 +164,7 @@ agent_end → 提取回复 → 发送至微信
 
 - **固定凭证**：运行时从存储加载唯一账号的登录凭证
 - **单队列机制**：消息按接收顺序排队处理
-- **requestId 格式**：毫秒级时间戳 `YYMMDDHHMMSSmmm`（17位）
+- **requestId 格式**：毫秒级时间戳 `YYMMDDHHMMSSmmm`（15 位）+ 3 位同毫秒序号（共 18 位，保证同毫秒内唯一）
 
 ### 持久化存储
 
@@ -177,7 +202,7 @@ AI 空闲？ → 否 → 加入 pendingMessages 队列
     ↓ 是
 triggerAiInternal → sendUserMessage → AI 生成回复
     ↓
-agent_end → sendMessageWithRetry → 发送至微信
+agent_settled → sendMessageWithRetry → 发送至微信
     ↓
 onAiDone → 检查队列 → 触发下一条
 ```
@@ -185,7 +210,8 @@ onAiDone → 检查队列 → 触发下一条
 **防重机制**：
 - `processedRequests` Map 记录已处理的 requestId
 - 每 50 次请求清理一次过期记录（1 小时前）
-- `safelyTriggerNext` 支持最多 3 次重试，指数退避
+- 队列排空由 `safelyTriggerNext` 完成；底层发送由 `sendMessageWithRetry` 负责，
+  最多重试 3 次并采用指数退避
 
 ## 项目结构
 
@@ -222,8 +248,7 @@ pi-wechat-extension/
 │   └── markdown-filter.ts      # Markdown 过滤
 │
 ├── storage/
-│   ├── state.ts                # 持久化存储 + 单用户便捷函数
-│   └── state-dir.ts            # 存储目录解析
+│   └── state.ts                # 持久化存储 + 单用户便捷函数
 │
 ├── util/                       # 工具模块（来自 Tencent/openclaw-weixin）
 │   ├── logger.ts               # 日志记录
