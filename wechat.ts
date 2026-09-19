@@ -8,21 +8,19 @@
  * 4. 单用户固定凭证，运行时从 storage 加载
  */
 
-import path from "node:path";
-import { sendWeixinMediaFile } from "./messaging/send-media.js";
-import { sendMessageWeixin } from "./messaging/send.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { WeixinMessage } from "./api/types";
 import { MessageItemType } from "./api/types.js";
 import * as storage from "./storage/state.js";
-import { sendTyping, getConfig } from "./api/api.js";
-import type { WeixinApiOptions } from "./api/api.js";
 import { isDebugEnabled } from "./config.js";
 import { MediaStore } from "./media-store.js";
 import { formatTimestamp } from "./time.js";
 import { PollingLoop } from "./polling.js";
 import type { ConnectionState } from "./polling.js";
 import { TurnQueue, SerialTaskQueue } from "./queue.js";
+import { TypingController } from "./typing.js";
+import type { TypingCredentials } from "./typing.js";
+import { MessageSender } from "./sender.js";
 
 // 保持对外导出兼容（ConnectionState 现已迁至 polling.ts）
 export type { ConnectionState } from "./polling.js";
@@ -102,11 +100,17 @@ export class WechatEngine {
     console.error("[Wechat] Media background task failed:", err),
   );
 
-  // === Typing 相关（单用户）===
-  private typingTicketCache: { ticket: string; expiresAt: number; contextToken: string } | null = null;
-  private typingKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
-  private readonly TYPING_KEEPALIVE_INTERVAL_MS = 8000;
-  private readonly TYPING_TICKET_CACHE_TTL_MS = 60_000;
+  // === Typing / 发送 协作类（单用户）===
+  private typing = new TypingController({
+    getCredentials: () => this.getCredentials(),
+    debug: debugLog,
+    error: console.error,
+  });
+  private sender = new MessageSender({
+    getCredentials: () => this.getCredentials(),
+    debug: debugLog,
+    error: console.error,
+  });
 
   // === 注入依赖（host / config）===
   private host: WechatHost | null = null;
@@ -223,7 +227,7 @@ export class WechatEngine {
       debugLog(`Updating contextToken from message`);
       this.singleContextToken = msg.context_token;
       // contextToken 变化后旧 typing ticket 立即失效
-      this.typingTicketCache = null;
+      this.typing.invalidateTicket();
       // 持久化
       if (this.accountId && this.singleUserId) {
         await storage.saveContextToken(this.accountId, this.singleUserId, {
@@ -444,197 +448,71 @@ export class WechatEngine {
   // ============== Typing 相关（单用户）==============
 
   /**
+   * 组装当前单用户凭证；任一缺失返回 null。
+   */
+  private getCredentials(): TypingCredentials | null {
+    const config = this.config;
+    if (!config || !this.singleUserId || !this.singleContextToken) {
+      return null;
+    }
+    return {
+      baseUrl: config.baseUrl,
+      token: config.token,
+      userId: this.singleUserId,
+      contextToken: this.singleContextToken,
+    };
+  }
+
+  /**
    * 获取 typing_ticket（单用户）
    */
   async getTypingTicket(): Promise<string | null> {
-    const cfg = this.config;
-    if (!cfg || !this.singleUserId || !this.singleContextToken) {
-      return null;
-    }
-
-    // 检查缓存：必须与当前 contextToken 匹配，token 变化后旧 ticket 失效
-    if (
-      this.typingTicketCache &&
-      this.typingTicketCache.contextToken === this.singleContextToken &&
-      Date.now() < this.typingTicketCache.expiresAt
-    ) {
-      return this.typingTicketCache.ticket;
-    }
-
-    try {
-      const configResp = await getConfig({
-        baseUrl: cfg.baseUrl,
-        token: cfg.token,
-        ilinkUserId: this.singleUserId,
-        contextToken: this.singleContextToken,
-      });
-
-      if (configResp.ret === 0 && configResp.typing_ticket) {
-        this.typingTicketCache = {
-          ticket: configResp.typing_ticket,
-          expiresAt: Date.now() + this.TYPING_TICKET_CACHE_TTL_MS,
-          contextToken: this.singleContextToken,
-        };
-        return configResp.typing_ticket;
-      }
-    } catch (err) {
-      console.error(`[Wechat] getTypingTicket failed:`, err);
-    }
-
-    return null;
+    return this.typing.getTicket();
   }
 
   /**
    * 发送 typing 状态（单用户）
    */
   async sendTypingStatus(status: 1 | 2): Promise<void> {
-    const cfg = this.config;
-    if (!cfg || !this.singleUserId || !this.singleContextToken) {
-      return;
-    }
-
-    const ticket = await this.getTypingTicket();
-    if (!ticket) {
-      console.error(`[Wechat] sendTypingStatus: failed to get typing_ticket`);
-      return;
-    }
-
-    try {
-      await sendTyping({
-        baseUrl: cfg.baseUrl,
-        token: cfg.token,
-        body: {
-          ilink_user_id: this.singleUserId,
-          typing_ticket: ticket,
-          status,
-        },
-      });
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[Wechat] sendTypingStatus failed:`, errMsg);
-      if (errMsg.includes("ticket")) {
-        this.typingTicketCache = null;
-      }
-    }
+    return this.typing.sendStatus(status);
   }
 
   /**
    * 开始 typing keepalive（单用户）
    */
   async startTypingKeepalive(): Promise<void> {
-    await this.stopTypingKeepalive();
-
-    debugLog(`startTypingKeepalive: interval=${this.TYPING_KEEPALIVE_INTERVAL_MS}ms`);
-    await this.sendTypingStatus(1);
-
-    const timer = setInterval(async () => {
-      await this.sendTypingStatus(1);
-    }, this.TYPING_KEEPALIVE_INTERVAL_MS);
-
-    // 不要让 keepalive timer 阻止进程退出
-    timer.unref?.();
-
-    this.typingKeepaliveTimer = timer;
+    return this.typing.startKeepalive();
   }
 
   /**
    * 停止 typing keepalive（单用户）
    */
   async stopTypingKeepalive(): Promise<void> {
-    if (this.typingKeepaliveTimer) {
-      clearInterval(this.typingKeepaliveTimer);
-      this.typingKeepaliveTimer = null;
-    }
+    return this.typing.stopKeepalive();
   }
 
   // ============== 发送消息（单用户）==============
 
   /**
-   * 使用官方 sendMessageWeixin 发送纯文字消息（推荐！）
+   * 使用官方文本发送接口发送纯文字消息（推荐！）
    * 完全取代 sendMessageToUser + sendReplyToUser
    */
   async sendTextMessage(text: string): Promise<void> {
-    const cfg = this.config;
-    if (!cfg || !this.singleUserId || !this.singleContextToken) {
-      throw new Error("Single user not initialized");
-    }
-    debugLog(`sendTextMessage: text length=${text.length}`);
-
-    await sendMessageWeixin({
-      to: this.singleUserId,
-      text: text,
-      opts: {
-        baseUrl: cfg.baseUrl,
-        token: cfg.token,
-        contextToken: this.singleContextToken,
-      },
-    });
-    debugLog(`sendTextMessage: 文字消息发送成功`);
+    return this.sender.sendText(text);
   }
 
   /**
-   * 向微信发送本地文件 —— 直接使用官方 sendWeixinMediaFile（自动路由图片/视频/文件）
+   * 向微信发送本地文件 —— 直接使用官方媒体发送接口（自动路由图片/视频/文件）
    */
   async sendFileToUser(localPath: string): Promise<void> {
-    // 底层 sendWeixinMediaFile 不支持自定义显示名，显示名以本地文件 basename 为准，
-    // 因此不再接收/透传 fileName。
-    if (!localPath || typeof localPath !== "string") {
-      throw new Error("sendFileToUser: localPath 不能为空");
-    }
-
-    const cfg = this.config;
-    if (!cfg || !this.singleUserId || !this.singleContextToken) {
-      throw new Error("Single user not initialized");
-    }
-
-    const displayName = path.basename(localPath);
-    debugLog(`sendFileToUser START: localPath=${localPath}, displayName=${displayName} (使用官方 sendWeixinMediaFile)`);
-
-    const opts: WeixinApiOptions & { contextToken?: string } = {
-      baseUrl: cfg.baseUrl,
-      token: cfg.token,
-      contextToken: this.singleContextToken!,
-    };
-
-    const cdnBaseUrl = "https://novac2c.cdn.weixin.qq.com/c2c";
-
-    // 直接调用官方高层函数（自动处理 upload + 正确构造 item）
-    await sendWeixinMediaFile({
-      filePath: localPath,
-      to: this.singleUserId,
-      text: "",
-      opts,
-      cdnBaseUrl,
-    });
-
-    debugLog(`sendFileToUser COMPLETE: 文件 "${displayName}" 已通过官方 sendWeixinMediaFile 发送成功`);
+    return this.sender.sendFile(localPath);
   }
 
   /**
    * 发送消息到微信（带重试）
    */
   async sendMessageWithRetry(text: string, maxRetries: number = 3): Promise<void> {
-    if (!this.singleUserId || !this.singleContextToken) {
-      throw new Error("Single user not initialized");
-    }
-
-    let lastError: Error | null = null;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        await this.sendTextMessage(text);
-        return;
-      } catch (err: unknown) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        const errMsg = lastError.message;
-        console.error(`[Wechat] sendMessage attempt ${attempt} failed:`, errMsg);
-        if (attempt < maxRetries) {
-          await this.sleep(1000 * Math.pow(2, attempt - 1));
-        }
-      }
-    }
-
-    throw lastError ?? new Error("sendMessage failed");
+    return this.sender.sendWithRetry(text, maxRetries);
   }
 
   // ============== 防重相关 ==============
@@ -658,8 +536,7 @@ export class WechatEngine {
   // ============== 重置 ==============
 
   reset(): void {
-    this.stopTypingKeepalive();
-    this.typingTicketCache = null;
+    this.typing.reset();
 
     this.queue.reset();
     this.isTerminalMessageProcessing = false;

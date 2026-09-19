@@ -55,7 +55,6 @@ beforeEach(async () => {
   engine.reset();
   const e = engine as unknown as AnyEngine;
   e.isTerminalMessageProcessing = false;
-  e.typingTicketCache = null;
 
   await seedSingleUser(storage);
 });
