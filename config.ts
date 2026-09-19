@@ -19,7 +19,6 @@ export interface WechatPluginConfig {
 }
 
 export const DEFAULT_CONFIG: WechatPluginConfig = {
-  prefix: "[wechat]",
   debug: false,
 };
 
@@ -41,32 +40,30 @@ export function loadConfig(): WechatPluginConfig {
     return cachedConfig;
   }
 
-  // 1. 优先使用环境变量
-  if (process.env.WECHAT_DEBUG === "true" || process.env.WECHAT_MEDIA_PATH) {
-    cachedConfig = {
-      debug: process.env.WECHAT_DEBUG === "true",
-      mediaStoragePath: process.env.WECHAT_MEDIA_PATH,
-    };
-    return cachedConfig;
-  }
-
-  // 2. 尝试加载 config.json
+  // 1. 读取 config.json（若存在）
+  let userConfig: Partial<WechatPluginConfig> = {};
   try {
     if (existsSync(CONFIG_FILE)) {
       const content = readFileSync(CONFIG_FILE, "utf-8");
-      const userConfig = JSON.parse(content) as Partial<WechatPluginConfig>;
-      cachedConfig = {
-        ...DEFAULT_CONFIG,
-        ...userConfig,
-      };
-      return cachedConfig;
+      userConfig = JSON.parse(content) as Partial<WechatPluginConfig>;
     }
   } catch (err) {
     console.warn(`[Wechat] Failed to load config: ${err}`);
   }
 
-  // 3. 使用默认值
-  cachedConfig = { ...DEFAULT_CONFIG };
+  // 2. 基础优先级: config.json > 默认值
+  const merged: WechatPluginConfig = { ...DEFAULT_CONFIG, ...userConfig };
+
+  // 3. 环境变量按字段独立覆盖（不设置则保留 config.json / 默认值）
+  const envDebug = process.env.WECHAT_DEBUG;
+  if (envDebug !== undefined) {
+    merged.debug = envDebug.toLowerCase() === "true";
+  }
+  if (process.env.WECHAT_MEDIA_PATH) {
+    merged.mediaStoragePath = process.env.WECHAT_MEDIA_PATH;
+  }
+
+  cachedConfig = merged;
   return cachedConfig;
 }
 
