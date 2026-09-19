@@ -1,5 +1,13 @@
 /**
  * index.ts - 微信插件入口（单用户版本）
+ *
+ * 事件桥接的核心约定：
+ * - 不再使用模块级 `isCurrentMessageFromWechat` / `currentRequestId` + `setTimeout`
+ *   的延迟读取；每轮 turn 的身份（`{ fromWechat, requestId }`）都在事件发生时
+ *   通过 `resolveTurnBeforeRun()` / `resolveTurnFromBranch()` 从 session 中同步
+ *   解析，并显式传给处理函数。
+ * - 最终回复在 `agent_settled` 发送（一轮 prompt 只发一次，覆盖重试/压缩/续跑后的最终版）；
+ *   `agent_end` 只负责 typing 收敛与终端标志兜底。
  */
 
 import { Type } from "@sinclair/typebox";
@@ -10,16 +18,33 @@ import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } fr
 import { saveToken, upsertAccount, deleteAccountData, removeAccount, getDefaultAccountToken } from "./storage/state.js";
 import { engine, setPi, setConfig } from "./wechat.js";
 import { isDebugEnabled } from "./config.js";
+import { redactToken } from "./util/redact.js";
 
 // ============== 缓存 ==============
 
 let cachedGitBranch: string | null = null;
 
-// 标识当前消息是否来自微信（默认 false）
-let isCurrentMessageFromWechat = false;
+interface WechatTurn {
+  fromWechat: boolean;
+  requestId: string | null;
+}
 
-// 保存当前消息的 requestId
-let currentRequestId: string | null = null;
+/**
+ * 由 `input` 事件（`pi.sendUserMessage` 注入）维护的待处理微信消息 FIFO。
+ * 只用于在 `event.prompt` 兜底时识别来源，不保存跨轮的可变 turn 标记。
+ */
+const pendingWechatInputs: Array<{ requestId: string | null; text: string }> = [];
+
+/**
+ * buildMetaInfo 的增量成本累计：记录已处理的 entry id + 运行总量，
+ * 使每轮只需处理新增分支（有界），而不是每轮全量扫描整个 branch。
+ */
+const costAccumulator = {
+  processedIds: new Set<string>(),
+  total: 0,
+  lastIndex: 0,
+  lastId: null as string | null,
+};
 
 // ============== 调试日志辅助函数 ==============
 
@@ -32,21 +57,18 @@ function debugLog(message: string, ...args: unknown[]): void {
 export default function (pi: ExtensionAPI) {
   setPi(pi);
 
-  // ============== 注册命令 ==============
-
   // ============== 注册 Tool：允许 AI 发送文件 ==============
   pi.registerTool({
     name: "send_wechat_file",
-    description: "向当前微信用户发送本地文件。必须提供文件的**完整绝对路径**（如 /Users/mou/code/pi-dev/Agent.pptx）。支持任意文件类型（pptx、pdf、jpg、png 等）。",
+    description:
+      "向当前微信用户发送本地文件。必须提供文件的**完整绝对路径**（如 /Users/mou/code/pi-dev/Agent.pptx）。" +
+      "支持任意文件类型（pptx、pdf、jpg、png 等）。微信端将以该文件的本地文件名作为显示名。",
     parameters: Type.Object({
       localPath: Type.String({
         description: "必须填写：Pi 本地文件的**完整绝对路径**（例如 /Users/mou/code/pi-dev/Agent.pptx）",
       }),
-      fileName: Type.Optional(Type.String({
-        description: "可选：发送时在微信中显示的文件名（默认使用实际文件名）",
-      })),
     }),
-    execute: async (toolCallId: string, params: unknown, signal?: unknown, onUpdate?: unknown) => {
+    execute: async (toolCallId: string, params: unknown) => {
       debugLog(`send_wechat_file tool called - toolCallId=${toolCallId}, params=`, JSON.stringify(params));
 
       if (!params || typeof params !== "object") {
@@ -55,7 +77,7 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: errMsg }], isError: true };
       }
 
-      const { localPath, fileName } = params as { localPath?: string; fileName?: string };
+      const { localPath } = params as { localPath?: string };
 
       if (!localPath || typeof localPath !== "string" || localPath.trim() === "") {
         const errMsg = "必须提供 localPath 参数（文件的完整绝对路径）。例如：/Users/mou/code/pi-dev/Agent.pptx";
@@ -70,14 +92,12 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: errMsg }], isError: true };
       }
 
-      const displayName = fileName && typeof fileName === "string" && fileName.trim() !== ""
-        ? fileName.trim()
-        : path.basename(trimmedPath);
-
+      // 底层 sendFileToUser 不再支持自定义显示名，以本地文件名为准。
+      const displayName = path.basename(trimmedPath);
       debugLog(`准备发送文件: ${displayName} (${trimmedPath})`);
 
       try {
-        await engine.sendFileToUser(trimmedPath, displayName);
+        await engine.sendFileToUser(trimmedPath);
         const successMsg = `文件 "${displayName}" 已成功发送至微信`;
         debugLog(successMsg);
         return { content: [{ type: "text", text: successMsg }] };
@@ -88,6 +108,8 @@ export default function (pi: ExtensionAPI) {
       }
     },
   });
+
+  // ============== 注册命令 ==============
 
   pi.registerCommand("wechat", {
     description: "WeChat integration",
@@ -114,6 +136,8 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify("WeChat: Not logged in. Use /wechat login first.", "error");
           return;
         }
+        // 与 session_start 保持一致：启动轮询前必须先把凭证同步给 engine。
+        setConfig({ baseUrl: token.baseUrl, token: token.botToken });
         ctx.ui.notify("WeChat: Starting polling...", "info");
         engine.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
           ctx.ui.notify(`Polling error: ${err.message}`, "error");
@@ -139,22 +163,9 @@ export default function (pi: ExtensionAPI) {
 
   // ============== session_start ==============
 
-  pi.on("session_start", async (_event, ctx) => {
-    // 注册 footer 回调
-    ctx.ui.setFooter((tui, theme, footerData) => {
-      cachedGitBranch = footerData.getGitBranch();
-      const unsub = footerData.onBranchChange(() => {
-        cachedGitBranch = footerData.getGitBranch();
-        tui.requestRender();
-      });
-      return {
-        dispose: unsub,
-        invalidate() {},
-        render(_width: number): string[] {
-          return [];
-        },
-      };
-    });
+  pi.on("session_start", async (_event, _ctx) => {
+    // 不再用空 render 覆盖内置 footer；分支名通过 pi.exec 获取。
+    cachedGitBranch = await readGitBranch();
 
     const token = await getDefaultAccountToken();
     if (token) {
@@ -177,147 +188,239 @@ export default function (pi: ExtensionAPI) {
     engine.reset();
   });
 
+  // ============== input ==============
+  // pi.sendUserMessage 注入时 source === "extension"。把待处理微信消息文本入队，
+  // 供 before_agent_start 在无法从 session 判断来源时用 event.prompt 兜底匹配。
+  pi.on("input", (event, ctx) => {
+    const inputEvent = event as { source?: string; text?: string };
+    if (inputEvent.source !== "extension") return { action: "continue" };
+
+    const turn = resolveTurnBeforeRun(ctx);
+    if (turn.fromWechat) {
+      pendingWechatInputs.push({ requestId: turn.requestId, text: inputEvent.text ?? "" });
+    }
+    return { action: "continue" };
+  });
+
   // ============== before_agent_start ==============
 
-  pi.on("before_agent_start", async (_event, ctx) => {
-    // 标识当前消息是否来自微信
-    const wechatMeta = findWechatMetaFromSession(ctx);
-    isCurrentMessageFromWechat = !!wechatMeta;
-    currentRequestId = wechatMeta?.requestId ?? null;
-
-    if (wechatMeta) {
-      debugLog(`before_agent_start: WeChat message detected, requestId=${wechatMeta.requestId}`);
+  pi.on("before_agent_start", async (event, ctx) => {
+    // 同步捕获本轮 turn 的身份，不做任何延迟。
+    // 此刻当前 user 消息尚未写入分支（pi 在 before_agent_start 之后才 append），
+    // 因此用「最近一条 wechat_meta 是否位于最后一条 assistant 之后」判断。
+    const turn = resolveTurnBeforeRun(ctx, (event as { prompt?: string }).prompt);
+    if (turn.fromWechat) {
+      debugLog(`before_agent_start: WeChat turn detected, requestId=${turn.requestId ?? "(unknown)"}`);
     } else {
       // 终端消息正在处理，微信消息需要排队
       engine.setTerminalProcessing(true);
-      debugLog(`before_agent_start: Terminal message processing, WeChat messages will be queued`);
+      debugLog(`before_agent_start: Terminal turn, WeChat messages will be queued`);
     }
   });
 
-  // ============== message_start ==============
+  // ============== message_start / message_end（typing）==============
+  // 只在 assistant 消息上开启 / 停止 typing；user / toolResult 的结束不得提前关闭。
 
-  pi.on("message_start", async (_event, _ctx) => {
-    if (isCurrentMessageFromWechat) {
-      debugLog(`message_start: starting typing keepalive`);
-      await engine.startTypingKeepalive();
-    }
+  pi.on("message_start", async (event, ctx) => {
+    if (!isAssistantMessage(event)) return;
+    if (!resolveTurnFromBranch(ctx).fromWechat) return;
+    debugLog(`message_start: starting typing keepalive`);
+    await engine.startTypingKeepalive();
   });
 
-  // ============== message_end ==============
-
-  pi.on("message_end", async (_event, _ctx) => {
-    if (isCurrentMessageFromWechat) {
-      debugLog(`message_end: stopping typing keepalive`);
-      await engine.stopTypingKeepalive();
-    }
+  pi.on("message_end", async (event, ctx) => {
+    if (!isAssistantMessage(event)) return;
+    if (!resolveTurnFromBranch(ctx).fromWechat) return;
+    debugLog(`message_end: stopping typing keepalive`);
+    await engine.stopTypingKeepalive();
   });
 
   // ============== agent_end ==============
+  // 只用于 typing 收敛（以及终端标志兜底），最终回复统一在 agent_settled 发送。
 
-  pi.on("agent_end", async (event, ctx) => {
-    // 如果是终端消息处理结束，重置终端处理状态
-    if (!isCurrentMessageFromWechat) {
+  pi.on("agent_end", async (_event, ctx) => {
+    const turn = resolveTurnFromBranch(ctx);
+    if (turn.fromWechat) {
+      await engine.stopTypingKeepalive();
+    } else {
       engine.setTerminalProcessing(false);
     }
-
-    setTimeout(async () => {
-      await handleAgentEnd(event, ctx);
-    }, 20);
   });
 
-  // ============== agent_end 处理函数 ==============
+  // ============== agent_settled ==============
 
-  async function handleAgentEnd(event: unknown, ctx: ExtensionContext) {
-    const eventObj = event as { messages?: unknown[] };
+  pi.on("agent_settled", async (_event, ctx) => {
+    // 每轮结束时的可靠信号：pi 不会再有自动重试 / 压缩 / 续跑。
+    const turn = resolveTurnFromBranch(ctx);
 
-    if (!isCurrentMessageFromWechat) {
-      // 终端消息，不发送微信
-      // 注意：isTerminalMessageProcessing 已在 agent_end 事件中重置
-      // onAiDone 会触发队列处理
+    if (!turn.fromWechat) {
+      // 终端 turn：释放标志并排空队列（对缺失 agent_end 的情况也是兜底）。
+      engine.setTerminalProcessing(false);
       engine.onAiDone();
       return;
     }
 
-    // 使用 before_agent_start 时保存的 requestId
-    const requestId = currentRequestId;
-    if (!requestId) {
-      debugLog(`No requestId found`);
-      engine.onAiDone();
-      return;
-    }
+    await handleWechatSettled(ctx, turn);
+  });
 
-    // 防重检查
-    if (engine.isRequestProcessed(requestId)) {
-      debugLog(`Request ${requestId} already processed, skipping`);
-      return;
-    }
-    // engine.markRequestProcessed(requestId);
+  // ============== agent_settled 处理函数 ==============
 
-    // 提取 AI 回复（最后一条有内容的 assistant 消息）
-    const assistantMessages = eventObj.messages?.filter?.((m: unknown) => {
-      const msg = m as { role?: string };
-      return msg.role === "assistant";
-    }) ?? [];
-
-    let replyText: string | null = null;
-    for (let i = assistantMessages.length - 1; i >= 0; i--) {
-      replyText = extractReplyText(assistantMessages[i]);
-      if (replyText) break;
-    }
-
-    if (!replyText) {
-      debugLog(`No reply text found`);
-      engine.onAiDone();
-      return;
-    }
-    engine.markRequestProcessed(requestId);
-
-    debugLog(`Sending reply: ${replyText.slice(0, 50)}...`);
-
-    // 追加模型元信息
-    const metaInfo = buildMetaInfo(ctx);
-    const finalReply = replyText + (metaInfo ? "\n\n" + metaInfo : "");
-
-    // 发送回复
+  async function handleWechatSettled(ctx: ExtensionContext, turn: WechatTurn): Promise<void> {
     try {
-      await engine.sendMessageWithRetry(finalReply);
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[Wechat] Failed to send reply:`, errMsg);
-      ctx.ui?.notify?.(`微信回复失败: ${errMsg}`, "error");
-    }
+      if (!turn.requestId) {
+        debugLog(`agent_settled: WeChat turn without requestId, skip sending`);
+        return;
+      }
 
-    engine.onAiDone();
+      // 防重
+      if (engine.isRequestProcessed(turn.requestId)) {
+        debugLog(`Request ${turn.requestId} already processed, skipping`);
+        return;
+      }
+
+      // 提取本轮最终回复（branch 中最后一条有文本的 assistant 消息）
+      const replyText = extractLastReply(ctx);
+      if (!replyText) {
+        debugLog(`agent_settled: no reply text found`);
+        return;
+      }
+
+      // typing 兜底停止
+      await engine.stopTypingKeepalive();
+
+      // 追加模型元信息
+      const metaInfo = buildMetaInfo(ctx);
+      const finalReply = replyText + (metaInfo ? "\n\n" + metaInfo : "");
+
+      debugLog(`Sending reply: ${replyText.slice(0, 50)}...`);
+
+      try {
+        await engine.sendMessageWithRetry(finalReply);
+        // 只有发送成功后才标记已处理，失败时仍可重试（D2）。
+        engine.markRequestProcessed(turn.requestId);
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[Wechat] Failed to send reply:`, errMsg);
+        ctx.ui?.notify?.(`微信回复失败: ${errMsg}`, "error");
+      }
+    } finally {
+      // 所有早退 / 异常路径都必须释放队列，否则后续微信消息会永久停滞（D1）。
+      engine.onAiDone();
+    }
   }
 
   // ============== 辅助函数 ==============
 
+  /** 统一的分支 entry 视图（fake / 真实 SessionEntry 的公共子集）。 */
+  interface BranchEntry {
+    type?: string;
+    id?: string;
+    parentId?: string | null;
+    customType?: string;
+    data?: { requestId?: string };
+    message?: { role?: string; content?: unknown; usage?: { cost?: { total?: number } } };
+  }
+
+  function getBranch(ctx: ExtensionContext): BranchEntry[] {
+    return ctx.sessionManager.getBranch() as unknown as BranchEntry[];
+  }
+
+  function isAssistantMessage(event: unknown): boolean {
+    return (event as { message?: { role?: string } })?.message?.role === "assistant";
+  }
+
   /**
-   * 从 sessionManager 中查找 wechat_meta
-   * 只检查最后一个 entry（最近添加的），因为 wechat_meta 在 sendUserMessage 之前写入
+   * 事件发生时同步解析 turn 身份（pre-run）：优先用 session 中的 wechat_meta，
+   * 找不到时用 event.prompt 与 input FIFO 兜底。
    */
-  function findWechatMetaFromSession(ctx: ExtensionContext): { requestId: string } | null {
-    const entries = ctx.sessionManager.getBranch();
-    
-    if (entries.length === 0) return null;
-    
-    // 只检查最后一个 entry（最近添加的）
-    const lastEntry = entries[entries.length - 1] as { type?: string; customType?: string; data?: unknown };
-    
-    // 检查最后一个 entry 是否是 wechat_meta
-    if (lastEntry.type === "custom" && lastEntry.customType === "wechat_meta") {
-      return lastEntry.data as { requestId: string };
+  function resolveTurnBeforeRun(ctx: ExtensionContext, prompt?: string): WechatTurn {
+    const meta = resolvePendingWechatMeta(ctx);
+    if (meta) return { fromWechat: true, requestId: meta.requestId };
+
+    if (typeof prompt === "string") {
+      const idx = pendingWechatInputs.findIndex((item) => item.text === prompt);
+      if (idx >= 0) {
+        const [item] = pendingWechatInputs.splice(idx, 1);
+        return { fromWechat: true, requestId: item.requestId };
+      }
     }
-    
-    // 最后一个 entry 不是 wechat_meta，说明不是微信消息
+
+    return { fromWechat: false, requestId: null };
+  }
+
+  /**
+   * pre-run（before_agent_start / input）阶段：当前 user 消息尚未写入分支，
+   * 因此从叶子向前扫描，遇到 wechat_meta 即为微信 turn；
+   * 先遇到 assistant 说明上一轮已结束，属终端 turn。
+   */
+  function resolvePendingWechatMeta(ctx: ExtensionContext): { requestId: string | null } | null {
+    const branch = getBranch(ctx);
+    for (let i = branch.length - 1; i >= 0; i--) {
+      const entry = branch[i];
+      if (entry.type === "custom" && entry.customType === "wechat_meta") {
+        return { requestId: entry.data?.requestId ?? null };
+      }
+      if (entry.type === "message" && entry.message?.role === "assistant") {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  function resolveTurnFromBranch(ctx: ExtensionContext): WechatTurn {
+    const meta = resolveActiveWechatMeta(ctx);
+    return { fromWechat: meta !== null, requestId: meta?.requestId ?? null };
+  }
+
+  /**
+   * 运行中 / 结束后：当前 user 消息已经在分支里，用它的 parentId 反向关联 wechat_meta。
+   * 若还没有 user 消息（测试夹具 / 边界情况），退化为 pre-run 规则。
+   */
+  function resolveActiveWechatMeta(ctx: ExtensionContext): { requestId: string | null } | null {
+    const branch = getBranch(ctx);
+
+    for (let i = branch.length - 1; i >= 0; i--) {
+      const entry = branch[i];
+
+      if (entry.type === "message" && entry.message?.role === "user") {
+        const parentId = entry.parentId;
+        if (parentId) {
+          const parent = ctx.sessionManager.getEntry(parentId) as
+            | { type?: string; customType?: string; data?: { requestId?: string } }
+            | undefined;
+          if (parent?.type === "custom" && parent.customType === "wechat_meta") {
+            return { requestId: parent.data?.requestId ?? null };
+          }
+        }
+        return null;
+      }
+
+      if (entry.type === "custom" && entry.customType === "wechat_meta") {
+        return { requestId: entry.data?.requestId ?? null };
+      }
+    }
+
+    return null;
+  }
+
+  /** 提取 branch 中最后一条有文本的 assistant 回复。 */
+  function extractLastReply(ctx: ExtensionContext): string | null {
+    const branch = getBranch(ctx);
+    for (let i = branch.length - 1; i >= 0; i--) {
+      const entry = branch[i];
+      if (entry.type === "message" && entry.message?.role === "assistant") {
+        const text = extractReplyText(entry.message);
+        if (text) return text;
+      }
+    }
     return null;
   }
 
   function extractReplyText(assistantMsg: unknown): string | null {
     const msg = assistantMsg as { content?: unknown };
-    
+
     if (typeof msg.content === "string") {
-      return msg.content.trim();
+      return msg.content.trim() || null;
     }
     if (Array.isArray(msg.content)) {
       const texts: string[] = [];
@@ -354,13 +457,7 @@ export default function (pi: ExtensionAPI) {
       statsParts.push(`${percentStr}/${limitStr}`);
     }
 
-    let totalCost = 0;
-    for (const entry of ctx.sessionManager.getBranch()) {
-      const entryObj = entry as { type?: string; message?: { role?: string; usage?: { cost?: { total?: number } } } };
-      if (entryObj.type === "message" && entryObj.message?.role === "assistant") {
-        totalCost += entryObj.message.usage?.cost?.total ?? 0;
-      }
-    }
+    const totalCost = accumulateCost(ctx);
     if (totalCost > 0) {
       statsParts.push(`$${totalCost.toFixed(3)}`);
     }
@@ -376,7 +473,54 @@ export default function (pi: ExtensionAPI) {
     return lines.join("\n");
   }
 
+  /**
+   * 增量累计分支中的 assistant 成本。
+   * 记录已处理 entry id + 运行总量，并在分支连续增长时只处理新增部分；
+   * 分支发生压缩 / 分叉时回退为按 id 去重的扫描，保证不重复累计。
+   */
+  function accumulateCost(ctx: ExtensionContext): number {
+    const branch = getBranch(ctx);
+
+    let start = 0;
+    if (
+      costAccumulator.lastId !== null &&
+      costAccumulator.lastIndex > 0 &&
+      costAccumulator.lastIndex <= branch.length
+    ) {
+      const anchor = branch[costAccumulator.lastIndex - 1];
+      if (anchor && anchor.id === costAccumulator.lastId) {
+        start = costAccumulator.lastIndex;
+      }
+    }
+
+    for (let i = start; i < branch.length; i++) {
+      const entry = branch[i];
+      const id = entry.id;
+      if (id && costAccumulator.processedIds.has(id)) continue;
+
+      if (entry.type === "message" && entry.message?.role === "assistant") {
+        costAccumulator.total += entry.message.usage?.cost?.total ?? 0;
+      }
+      if (id) costAccumulator.processedIds.add(id);
+    }
+
+    costAccumulator.lastIndex = branch.length;
+    costAccumulator.lastId = branch.length > 0 ? branch[branch.length - 1].id ?? null : null;
+
+    return costAccumulator.total;
+  }
+
   // ============== 登录处理 ==============
+
+  async function readGitBranch(): Promise<string | null> {
+    try {
+      const result = await pi.exec("git", ["branch", "--show-current"]);
+      const branch = (result?.stdout ?? "").trim();
+      return branch || null;
+    } catch {
+      return null;
+    }
+  }
 
   async function handleLogin(ctx: ExtensionCommandContext) {
     try {
@@ -441,13 +585,20 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify(`启动轮询失败: ${err.message}`, "error");
         });
 
+        // 不打印明文凭证，仅输出脱敏后的字段（D11）。
         console.log("\n=== 登录成功 ===");
-        console.log(JSON.stringify({
-          botToken,
-          accountId,
-          userId: loginResult.userId,
-          baseUrl: loginResult.baseUrl,
-        }, null, 2));
+        console.log(
+          JSON.stringify(
+            {
+              botToken: redactToken(botToken),
+              accountId,
+              userId: loginResult.userId,
+              baseUrl: loginResult.baseUrl,
+            },
+            null,
+            2,
+          ),
+        );
         console.log("================\n");
       } else {
         ctx.ui.notify(`登录失败: ${loginResult.message}`, "error");
