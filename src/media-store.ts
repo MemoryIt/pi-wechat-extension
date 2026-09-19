@@ -11,9 +11,9 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { getMediaStoragePath } from "./config.js";
-import { downloadMediaFromItem } from "./media/media-download.js";
-import { MessageItemType } from "./api/types.js";
-import type { MessageItem } from "./api/types.js";
+import { downloadMediaFromItem } from "../media/media-download.js";
+import { MessageItemType } from "../api/types.js";
+import type { MessageItem } from "../api/types.js";
 import { formatTimestamp } from "./time.js";
 
 // ============== 媒体存储配置 ==============

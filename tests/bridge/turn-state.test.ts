@@ -7,7 +7,7 @@
  *   D4  每轮 turn 身份在事件发生时同步解析，不再依赖 module 全局标记 + setTimeout
  *   D21 buildMetaInfo 增量累计成本，第二次 turn 不再重复读取旧 entry
  *
- * 注意：这里 mock 掉 ../../wechat.js，只验证 index.ts 自身的桥接逻辑，
+ * 注意：这里 mock 掉 ../../src/wechat.js，只验证 index.ts 自身的桥接逻辑，
  * 不触碰底层模块，也不依赖真实 pi 运行时。
  */
 import { test, expect, mock, beforeEach } from "bun:test";
@@ -48,12 +48,12 @@ const engine = {
 };
 
 // index.ts 用 "./wechat.js" 引入；同时注册 .ts 以保证解析匹配。
-mock.module(repoPath("wechat.js"), () => ({
+mock.module(repoPath("src", "wechat.js"), () => ({
   engine,
   setPi: mock(() => {}),
   setConfig: mock(() => {}),
 }));
-mock.module(repoPath("wechat.ts"), () => ({
+mock.module(repoPath("src", "wechat.ts"), () => ({
   engine,
   setPi: mock(() => {}),
   setConfig: mock(() => {}),
@@ -66,7 +66,7 @@ mock.module(repoPath("auth", "login-qr.js"), () => ({
   DEFAULT_ILINK_BOT_TYPE: "test-bot-type",
 }));
 
-const extensionModule = await import("../../index.ts");
+const extensionModule = await import("../../src/index.ts");
 const register = extensionModule.default as (pi: unknown) => void;
 
 const { api, handlers } = createFakePi();

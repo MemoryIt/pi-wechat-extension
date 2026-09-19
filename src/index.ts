@@ -20,11 +20,11 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "./auth/login-qr.js";
+import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "../auth/login-qr.js";
 import { saveToken, upsertAccount, deleteAccountData, removeAccount, getDefaultAccountToken } from "./storage/state.js";
 import { engine, setPi, setConfig } from "./wechat.js";
 import { isDebugEnabled } from "./config.js";
-import { redactToken } from "./util/redact.js";
+import { redactToken } from "../util/redact.js";
 import { createLogger } from "./logger.js";
 
 // ============== 缓存 ==============

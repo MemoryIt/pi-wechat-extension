@@ -120,8 +120,8 @@ export function installBridgeMocks(engine: BridgeEngine): void {
     setPi: setPiMock,
     setConfig: setConfigMock,
   });
-  mock.module(repoPath("wechat.js"), wechatModule);
-  mock.module(repoPath("wechat.ts"), wechatModule);
+  mock.module(repoPath("src", "wechat.js"), wechatModule);
+  mock.module(repoPath("src", "wechat.ts"), wechatModule);
 
   const authModule = () => ({
     startWeixinLoginWithQr: authMock.startWeixinLoginWithQr,
@@ -133,7 +133,7 @@ export function installBridgeMocks(engine: BridgeEngine): void {
 }
 
 export async function loadIndex() {
-  const mod = await import("../../index.ts");
+  const mod = await import("../../src/index.ts");
   return mod.default as (pi: unknown) => void;
 }
 

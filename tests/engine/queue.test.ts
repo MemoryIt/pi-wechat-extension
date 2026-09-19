@@ -5,7 +5,7 @@
  * 过期清理（阈值 50 / 1h）、reset。
  */
 import { test, expect, setSystemTime } from "bun:test";
-import { TurnQueue, SerialTaskQueue } from "../../queue.js";
+import { TurnQueue, SerialTaskQueue } from "../../src/queue.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

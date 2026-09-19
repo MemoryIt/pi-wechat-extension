@@ -5,7 +5,7 @@ import { logger } from "../util/logger.js";
 import { generateId } from "../util/random.js";
 import type { WeixinMessage, MessageItem } from "../api/types.js";
 import { MessageItemType } from "../api/types.js";
-import { resolveStateDir } from "../storage/state-dir.js";
+import { resolveStateDir } from "../src/storage/state-dir.js";
 
 // ---------------------------------------------------------------------------
 // Context token store (in-process cache + disk persistence)

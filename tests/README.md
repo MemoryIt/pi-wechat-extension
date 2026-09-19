@@ -47,9 +47,9 @@ bun run typecheck                # tsc --noEmit（底层模块有 3 条既有 TS
 
 | 层 | 目录 | 被测对象 | 手法 |
 |---|---|---|---|
-| L1 纯逻辑 | `tests/unit` | `config.ts`、`storage/state.ts` | 真实模块 + mock `getAgentDir`/`logger`，临时目录 |
-| L2 引擎状态机 | `tests/engine` | `wechat.ts` 的 `WechatEngine` | `mock.module` 掉 api/messaging/media，可控返回值；storage/config 用真实实现 |
-| L3 事件桥接 | `tests/bridge` | `index.ts` | 探针型假 `ExtensionAPI` + 假 engine |
+| L1 纯逻辑 | `tests/unit` | `src/config.ts`、`src/storage/state.ts` | 真实模块 + mock `getAgentDir`/`logger`，临时目录 |
+| L2 引擎状态机 | `tests/engine` | `src/wechat.ts` 的 `WechatEngine` | `mock.module` 掉 api/messaging/media，可控返回值；storage/config 用真实实现 |
+| L3 事件桥接 | `tests/bridge` | `src/index.ts` | 探针型假 `ExtensionAPI` + 假 engine |
 
 ## 基础设施
 
@@ -95,9 +95,9 @@ bun run typecheck                # tsc --noEmit（底层模块有 3 条既有 TS
   故移除了工具/引擎层的 `fileName`；微信显示名以本地文件 basename 为准。
 - **typecheck 例外**（均位于白名单外的底层模块，属既有问题）：
   - `media/silk-transcode.ts` → `silk-wasm`（可选依赖，缺失时降级）
-  - `messaging/inbound.ts` → `../storage/state-dir.js`（文件已删除，仅 type-only 引用）
+  - `messaging/inbound.ts` → `../src/storage/state-dir.js`（仅 type-only 引用）
   - `messaging/send.ts` → `openclaw/plugin-sdk/reply-runtime`（type-only 私有包）
-- `config.ts` / `storage/state.ts` 的路径常量在 import 时求值，`getAgentDir()` 在测试进程内固定为同一临时目录，
+- `src/config.ts` / `src/storage/state.ts` 的路径常量在 import 时求值，`getAgentDir()` 在测试进程内固定为同一临时目录，
   用例间通过清空目录内容实现隔离。
 
 ## 包作用域

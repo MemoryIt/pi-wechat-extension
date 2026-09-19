@@ -17,11 +17,11 @@
   },
   "include": [
     "*.ts",
+    "src/**/*.ts",
     "api/*.ts",
     "auth/*.ts",
     "cdn/*.ts",
     "media/*.ts",
-    "storage/*.ts",
     "util/*.ts",
     "types/*.d.ts"
   ],

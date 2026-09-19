@@ -17,7 +17,7 @@
 import { readFileSync, writeFileSync, chmodSync, mkdirSync, existsSync, unlinkSync, rmSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { logger } from "../util/logger.js";
+import { logger } from "../../util/logger.js";
 
 // ============== 类型定义 ==============
 
