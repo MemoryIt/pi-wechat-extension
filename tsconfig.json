@@ -22,7 +22,8 @@
     "cdn/*.ts",
     "media/*.ts",
     "storage/*.ts",
-    "util/*.ts"
+    "util/*.ts",
+    "types/*.d.ts"
   ],
   "exclude": [
     "node_modules",
