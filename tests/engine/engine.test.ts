@@ -182,7 +182,7 @@ test("D6 目标：sendUserMessage 抛错后应释放 isAiProcessing 且不冒泡
 
   // 不得向上冒泡成「轮询失败 / connectionState=error」
   await expect(engine.handleMessage(textMessage("hi"), opts)).resolves.toBeUndefined();
-  expect((engine as unknown as AnyEngine).isAiProcessing).toBe(false);
+  expect((engine as unknown as AnyEngine).queue.isBusy()).toBe(false);
   expect(engine.connectionState).toBe("disconnected");
 });
 
@@ -296,7 +296,7 @@ test("D7 目标：队列排空时 rejecting turn 应由引擎处理并释放状�
   const captured: unknown[] = [];
   const restore = wrapTriggerToObserveRejection(captured);
   try {
-    e.isAiProcessing = true;
+    e.queue.setBusy(true);
     await engine.triggerAi(textMessage("queued"), "R-queued", opts);
 
     pi.sendUserMessage.mockImplementation(() => {
@@ -306,7 +306,7 @@ test("D7 目标：队列排空时 rejecting turn 应由引擎处理并释放状�
     engine.onAiDone();
     await sleep(80);
 
-    expect(e.isAiProcessing).toBe(false);
+    expect(e.queue.isBusy()).toBe(false);
   } finally {
     restore();
   }
@@ -356,4 +356,39 @@ test("B4 目标：needs_relogin 时通知用户执行 /wechat login", async () =
   expect(notify).toHaveBeenCalledTimes(1);
   expect(String(notify.mock.calls[0][0])).toContain("/wechat login");
   expect(isolated.connectionState).toBe("needs_relogin");
+});
+
+// ---------------------------------------------------------------------------
+// B6：一进一出、requestId 不串号
+// ---------------------------------------------------------------------------
+
+test("B6 目标：终端处理期间连发消息按序排队，排空后 requestId/content 一一对应且不丢", async () => {
+  await engine.initSingleUser();
+  engine.setHost(pi as never);
+
+  // 模拟 pi 正在处理终端消息：此时所有新消息只能入队
+  engine.setTerminalProcessing(true);
+
+  await engine.triggerAi(textMessage("m1"), "r1", opts);
+  await engine.triggerAi(textMessage("m2"), "r2", opts);
+  await engine.triggerAi(textMessage("m3"), "r3", opts);
+
+  const e = engine as unknown as AnyEngine;
+  expect(e.queue.size).toBe(3);
+
+  // 终端处理结束，逐轮通知完成并排空队列
+  engine.setTerminalProcessing(false);
+  for (let i = 0; i < 3; i++) {
+    engine.onAiDone();
+    await sleep(60);
+  }
+
+  const requestIds = pi.calls.appendEntry
+    .filter(([type]) => type === "wechat_meta")
+    .map(([, data]) => (data as { requestId: string }).requestId);
+  const contents = pi.calls.sendUserMessage.map(([content]) => content);
+
+  expect(requestIds).toEqual(["r1", "r2", "r3"]);
+  expect(contents).toEqual(["m1", "m2", "m3"]);
+  expect(e.queue.size).toBe(0);
 });

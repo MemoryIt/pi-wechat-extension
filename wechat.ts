@@ -24,6 +24,7 @@ import { getMediaStoragePath, isDebugEnabled } from "./config.js";
 import { downloadMediaFromItem } from "./media/media-download.js";
 import { PollingLoop } from "./polling.js";
 import type { ConnectionState } from "./polling.js";
+import { TurnQueue } from "./queue.js";
 
 // 保持对外导出兼容（ConnectionState 现已迁至 polling.ts）
 export type { ConnectionState } from "./polling.js";
@@ -232,20 +233,14 @@ export class WechatEngine {
   private singleContextToken: string | null = null;
 
   // === 请求追踪（仅 requestId）===
-  private currentRequestId: string | null = null;
-  private processedRequests = new Map<string, number>();
-  private cleanupCounter = 0;
   private lastRequestIdMs = -1;
   private requestIdSeq = 0;
 
-  // === AI 处理状态 ===
-  private isAiProcessing = false;
-
-  // === 终端消息处理状态（新增）===
+  // === 终端消息处理状态（仍留 engine）===
   private isTerminalMessageProcessing = false;
 
-  // === 消息队列（单用户，不需要 Map）===
-  private pendingMessages: Array<{ msg: WeixinMessage; requestId: string }> = [];
+  // === 消息队列 / 忙闲 / 去重（抽到 TurnQueue）===
+  private queue = new TurnQueue<{ msg: WeixinMessage; requestId: string }>();
 
   // === Typing 相关（单用户）===
   private typingTicketCache: { ticket: string; expiresAt: number; contextToken: string } | null = null;
@@ -390,10 +385,10 @@ export class WechatEngine {
   async triggerAi(msg: WeixinMessage, requestId: string, opts: { baseUrl: string; token: string }): Promise<void> {
     // 只有当 AI 空闲且没有终端消息在处理时，才直接发送
     // 否则加入队列等待
-    if (this.isAiProcessing || this.isTerminalMessageProcessing) {
+    if (this.queue.isBusy() || this.isTerminalMessageProcessing) {
       // 加入队列
-      this.pendingMessages.push({ msg, requestId });
-      debugLog(`AI is ${this.isAiProcessing ? 'processing' : 'terminal processing'}, queued message (queue size: ${this.pendingMessages.length})`);
+      this.queue.enqueue({ msg, requestId });
+      debugLog(`AI is ${this.queue.isBusy() ? 'processing' : 'terminal processing'}, queued message (queue size: ${this.queue.size})`);
       return;
     }
 
@@ -456,19 +451,19 @@ export class WechatEngine {
       }
 
       // 标记处理完成并退出
-      this.isAiProcessing = false;
+      this.queue.setBusy(false);
       this.markRequestProcessed(requestId);
 
       // 处理队列中的下一条
-      if (this.pendingMessages.length > 0) {
+      if (this.queue.size > 0) {
         this.safelyTriggerNext();
       }
       return;
     }
 
     // === 文本消息处理 ===
-    this.currentRequestId = requestId;
-    this.isAiProcessing = true;
+    this.queue.setCurrentRequestId(requestId);
+    this.queue.setBusy(true);
     let handedOffToAgent = false;
 
     try {
@@ -500,9 +495,9 @@ export class WechatEngine {
       // 错误路径：无论从哪个 await 抛出都必须释放处理锁并继续排空队列。
       // 成功路径保持 isAiProcessing=true，等待 onAiDone() 通知本轮结束。
       if (!handedOffToAgent) {
-        this.isAiProcessing = false;
-        this.currentRequestId = null;
-        if (this.pendingMessages.length > 0) {
+        this.queue.setBusy(false);
+        this.queue.setCurrentRequestId(null);
+        if (this.queue.size > 0) {
           void this.safelyTriggerNext();
         }
       }
@@ -549,11 +544,11 @@ export class WechatEngine {
    * AI 处理完成
    */
   onAiDone(): void {
-    this.isAiProcessing = false;
-    this.currentRequestId = null;
+    this.queue.setBusy(false);
+    this.queue.setCurrentRequestId(null);
 
     // 处理队列中的下一条
-    if (this.pendingMessages.length > 0) {
+    if (this.queue.size > 0) {
       this.safelyTriggerNext();
     }
   }
@@ -568,19 +563,19 @@ export class WechatEngine {
     const BASE_DELAY = 20;
     await this.sleep(BASE_DELAY);
 
-    if (this.pendingMessages.length === 0) {
-      this.isAiProcessing = false;
+    if (this.queue.size === 0) {
+      this.queue.setBusy(false);
       return;
     }
 
-    const { msg, requestId } = this.pendingMessages.shift()!;
-    debugLog(`Triggering next message (queue size: ${this.pendingMessages.length})`);
+    const { msg, requestId } = this.queue.dequeue()!;
+    debugLog(`Triggering next message (queue size: ${this.queue.size})`);
 
     const opts = this.getCurrentOpts();
     if (!opts) {
       console.error("[Wechat] Failed to process queued message: engine config missing");
-      this.isAiProcessing = false;
-      if (this.pendingMessages.length > 0) void this.safelyTriggerNext();
+      this.queue.setBusy(false);
+      if (this.queue.size > 0) void this.safelyTriggerNext();
       return;
     }
 
@@ -589,9 +584,9 @@ export class WechatEngine {
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[Wechat] Failed to process queued message: ${errMsg}`);
-      this.isAiProcessing = false;
-      this.currentRequestId = null;
-      if (this.pendingMessages.length > 0) void this.safelyTriggerNext();
+      this.queue.setBusy(false);
+      this.queue.setCurrentRequestId(null);
+      if (this.queue.size > 0) void this.safelyTriggerNext();
     }
   }
 
@@ -799,30 +794,19 @@ export class WechatEngine {
   // ============== 防重相关 ==============
 
   getCurrentRequestId(): string | null {
-    return this.currentRequestId;
+    return this.queue.getCurrentRequestId();
   }
 
   isRequestProcessed(requestId: string): boolean {
-    return this.processedRequests.has(requestId);
+    return this.queue.isRequestProcessed(requestId);
   }
 
   markRequestProcessed(requestId: string): void {
-    this.processedRequests.set(requestId, Date.now());
-    this.cleanupCounter++;
-
-    if (this.cleanupCounter >= 50) {
-      this.cleanupProcessedRequests();
-    }
+    this.queue.markRequestProcessed(requestId);
   }
 
   cleanupProcessedRequests(): void {
-    const oneHourAgo = Date.now() - 3600000;
-    for (const [id, timestamp] of this.processedRequests) {
-      if (timestamp < oneHourAgo) {
-        this.processedRequests.delete(id);
-      }
-    }
-    this.cleanupCounter = 0;
+    this.queue.cleanupProcessedRequests();
   }
 
   // ============== 重置 ==============
@@ -831,12 +815,8 @@ export class WechatEngine {
     this.stopTypingKeepalive();
     this.typingTicketCache = null;
 
-    this.pendingMessages = [];
-    this.processedRequests.clear();
-    this.currentRequestId = null;
-    this.isAiProcessing = false;
+    this.queue.reset();
     this.isTerminalMessageProcessing = false;
-    this.cleanupCounter = 0;
     this.lastRequestIdMs = -1;
     this.requestIdSeq = 0;
 
