@@ -16,9 +16,11 @@ import type { TurnQueue, SerialTaskQueue } from "./queue.js";
 import type { MediaStore } from "./media-store.js";
 import type { MessageSender } from "./sender.js";
 import type { PluginLogger } from "../shared/logger.js";
+import { sleep } from "../shared/time.js";
+import type { WechatApiOpts } from "../shared/types.js";
 import type { WechatHost } from "./wechat.js";
 
-export type RouterTurnOptions = { baseUrl: string; token: string };
+export type RouterTurnOptions = WechatApiOpts;
 
 export interface RouterDeps {
   queue: TurnQueue<{ msg: WeixinMessage; requestId: string }>;
@@ -28,10 +30,6 @@ export interface RouterDeps {
   getHost(): WechatHost | null;
   getOpts(): RouterTurnOptions | null;
   logger: PluginLogger;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export class MessageRouter {

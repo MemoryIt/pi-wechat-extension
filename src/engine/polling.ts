@@ -9,6 +9,7 @@
 
 import type { WeixinMessage } from "../../api/types";
 import { getUpdates } from "../../api/api.js";
+import type { WechatApiOpts } from "../shared/types.js";
 
 export type ConnectionState =
   | "disconnected"
@@ -25,10 +26,7 @@ export const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
  */
 export const POLL_ABORTED = Symbol("wechat-poll-aborted");
 
-export interface StartPollingOpts {
-  baseUrl: string;
-  token: string;
-}
+export type StartPollingOpts = WechatApiOpts;
 
 export interface PollingLoopDeps {
   /** -> engine.initSingleUser() */

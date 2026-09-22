@@ -19,7 +19,7 @@
 
 import { readFileSync, writeFileSync, chmodSync, mkdirSync, existsSync, unlinkSync, rmSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { resolveStateDir } from "../shared/paths.js";
 import { logger } from "../../util/logger.js";
 
 // ============== 类型定义 ==============
@@ -55,7 +55,7 @@ export interface ContextTokens {
 // ============== 路径常量 ==============
 
 /** WeChat 插件数据存储目录: ~/.pi/agent/wechat */
-const BASE_DIR = join(getAgentDir(), "wechat");
+const BASE_DIR = resolveStateDir();
 
 function ensureDir(dir: string): void {
   if (!existsSync(dir)) {

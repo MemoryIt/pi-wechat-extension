@@ -1,16 +1,7 @@
 /**
  * storage/state-dir.ts
  *
- * 解析状态目录路径
+ * 兼容层：re-export 共享路径工具，保持既有 import 不变。
  */
 
-import { join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-
-/**
- * 获取插件状态目录
- * 路径: {agentDir}/wechat/
- */
-export function resolveStateDir(): string {
-  return join(getAgentDir(), "wechat");
-}
+export { resolveStateDir } from "../shared/paths.js";

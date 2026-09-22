@@ -15,3 +15,8 @@ export function formatTimestamp(date: Date): string {
   const ms = String(date.getMilliseconds()).padStart(3, "0");
   return `${yy}${mm}${dd}${hh}${min}${ss}${ms}`;
 }
+
+/** 睡眠指定毫秒。 */
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

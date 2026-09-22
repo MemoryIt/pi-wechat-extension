@@ -7,7 +7,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { resolveStateDir } from "./paths.js";
 
 // ============== 配置结构 ==============
 
@@ -24,7 +24,7 @@ export const DEFAULT_CONFIG: WechatPluginConfig = {
 
 // ============== 配置路径 ==============
 
-const CONFIG_DIR = join(getAgentDir(), "wechat");
+const CONFIG_DIR = resolveStateDir();
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
 // ============== 配置加载 ==============
@@ -87,5 +87,5 @@ export function clearConfigCache(): void {
  */
 export function getMediaStoragePath(): string {
   const config = loadConfig();
-  return config.mediaStoragePath ?? join(getAgentDir(), "wechat", "media");
+  return config.mediaStoragePath ?? join(resolveStateDir(), "media");
 }

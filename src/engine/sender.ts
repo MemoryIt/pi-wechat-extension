@@ -14,15 +14,12 @@ import { sendMessageWeixin } from "../../messaging/send.js";
 import { sendWeixinMediaFile } from "../../messaging/send-media.js";
 import type { WeixinApiOptions } from "../../api/api.js";
 import type { TypingCredentials } from "./typing.js";
+import { sleep } from "../shared/time.js";
 
 export interface SenderDeps {
   getCredentials(): TypingCredentials | null;
   debug(message: string, ...args: unknown[]): void;
   error(message: string, ...args: unknown[]): void;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export class MessageSender {

@@ -13,7 +13,8 @@ import { MessageItemType } from "../../api/types.js";
 import * as storage from "../storage/state.js";
 import { isDebugEnabled } from "../shared/config.js";
 import { MediaStore } from "./media-store.js";
-import { formatTimestamp } from "../shared/time.js";
+import { sleep, formatTimestamp } from "../shared/time.js";
+import type { WechatApiOpts } from "../shared/types.js";
 import { PollingLoop } from "./polling.js";
 import type { ConnectionState } from "./polling.js";
 import { TurnQueue, SerialTaskQueue } from "./queue.js";
@@ -41,10 +42,7 @@ export interface WechatHost {
   ): void;
 }
 
-export interface WechatConfig {
-  baseUrl: string;
-  token: string;
-}
+export type WechatConfig = WechatApiOpts;
 
 /**
  * 门面：把完整 ExtensionAPI 适配为窄接口 WechatHost 后注入单例 engine。
@@ -141,7 +139,7 @@ export class WechatEngine {
       },
       debug: this.logger.debug.bind(this.logger),
       error: this.logger.error.bind(this.logger),
-      sleep: (ms) => this.sleep(ms),
+      sleep,
     });
   }
 
@@ -214,14 +212,14 @@ export class WechatEngine {
   /**
    * 启动长轮询（委托 PollingLoop）
    */
-  async startPolling(opts: { baseUrl: string; token: string }): Promise<void> {
+  async startPolling(opts: WechatApiOpts): Promise<void> {
     await this.poller.start(opts);
   }
 
   /**
    * 处理收到的微信消息
    */
-  async handleMessage(msg: WeixinMessage, opts: { baseUrl: string; token: string }): Promise<void> {
+  async handleMessage(msg: WeixinMessage, opts: WechatApiOpts): Promise<void> {
     // 单用户模式下，忽略消息来源（固定发给单用户）
     const requestId = this.generateRequestId();
 
@@ -255,7 +253,7 @@ export class WechatEngine {
    * 触发 AI 处理消息
    * 单用户模式，无需 userId 参数
    */
-  async triggerAi(msg: WeixinMessage, requestId: string, opts: { baseUrl: string; token: string }): Promise<void> {
+  async triggerAi(msg: WeixinMessage, requestId: string, opts: WechatApiOpts): Promise<void> {
     // 只有当 AI 空闲且没有终端消息在处理时，才直接发送
     // 否则加入队列等待
     if (this.queue.isBusy() || this.isTerminalMessageProcessing) {
@@ -298,7 +296,7 @@ export class WechatEngine {
    *
    * 注：opts 目前未使用（保留参数以保持调用签名一致）。
    */
-  private async handleSlashCommand(msg: WeixinMessage, opts: { baseUrl: string; token: string }): Promise<void> {
+  private async handleSlashCommand(msg: WeixinMessage, opts: WechatApiOpts): Promise<void> {
     const trimmed = this.extractText(msg).trim();
 
     if (trimmed === "/help") {
@@ -319,7 +317,7 @@ export class WechatEngine {
     }
   }
 
-  private getCurrentOpts(): { baseUrl: string; token: string } | null {
+  private getCurrentOpts(): WechatApiOpts | null {
     const cfg = this.config;
     return cfg ? { baseUrl: cfg.baseUrl, token: cfg.token } : null;
   }
@@ -448,10 +446,6 @@ export class WechatEngine {
       this.requestIdSeq += 1;
     }
     return `${formatTimestamp(new Date(now))}${String(this.requestIdSeq).padStart(3, "0")}`;
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 
