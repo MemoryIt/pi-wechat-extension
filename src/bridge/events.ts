@@ -1,5 +1,5 @@
 /**
- * bridge.ts - 事件桥接
+ * events.ts - 事件桥接
  *
  * 从 index.ts 拆出：注册所有 `pi.on(...)` 处理器以及 `handleWechatSettled`。
  *

@@ -2,6 +2,9 @@
  * storage/state.ts
  * 
  * 持久化存储：登录凭证、context tokens、sync cursor
+ *
+ * 当前为单用户模式：底部 getSingleUser* 是单用户便捷函数；
+ * 其余多用户相关导出（listAccounts / loadContextTokens 等）属迁移遗留，暂保留。
  * 
  * 目录结构：
  * ~/.pi/agent/wechat/

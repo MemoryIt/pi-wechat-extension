@@ -3,7 +3,7 @@
  *
  * 从 index.ts 拆出：在事件发生时同步从 session 分支解析 `{ fromWechat, requestId }`，
  * 不保存跨轮的可变 turn 标记。`input` 事件注入的待处理 FIFO 也在此维护，
- * 通过 `pushPendingWechatInput()` / `resetPendingWechatInputs()` 暴露给 bridge.ts。
+ * 通过 `pushPendingWechatInput()` / `resetPendingWechatInputs()` 暴露给 events.ts。
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -29,7 +29,7 @@ export interface BranchEntry {
  */
 const pendingWechatInputs: Array<{ requestId: string | null; text: string }> = [];
 
-/** 入队一条注入的微信输入（供 bridge.ts 的 input 处理器使用）。 */
+/** 入队一条注入的微信输入（供 events.ts 的 input 处理器使用）。 */
 export function pushPendingWechatInput(item: { requestId: string | null; text: string }): void {
   pendingWechatInputs.push(item);
 }

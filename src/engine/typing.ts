@@ -1,10 +1,12 @@
 /**
  * typing.ts - Typing 指示灯控制器（单用户）
  *
- * 从 wechat.ts 提取，行为保持不变：
- * - typing_ticket 按 contextToken + TTL 缓存
+ * 负责 typing 指示灯状态：
+ * - typing_ticket 按 contextToken + TTL 缓存，contextToken 变化时旧 ticket 失效
  * - keepalive timer 间隔 8000ms 且 unref
- * - ticket 失效/失败时清缓存
+ * - 发送报错信息含 "ticket" 时清空缓存
+ *
+ * 最初自 wechat.ts 提取，行为保持不变。
  */
 
 import { getConfig, sendTyping } from "../../api/api.js";

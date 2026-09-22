@@ -1,9 +1,10 @@
 /**
- * polling.ts - 微信长轮询循环（从 wechat.ts 提取，行为保持不变）
+ * polling.ts - 微信长轮询循环
  *
- * 轮询职责独立于 WechatEngine：通过 PollingLoopDeps 反向注入宿主能力
+ * 负责 start/stop/reset 与连接状态维护：通过 PollingLoopDeps 反向注入宿主能力
  * （会话初始化 / 账号 / cursor 持久化 / 消息处理 / 会话过期通知 / 日志 / sleep），
  * PollingLoop 自身不直接依赖 storage、api 边界之外的模块。
+ * （最初自 wechat.ts 提取，行为保持不变。）
  */
 
 import type { WeixinMessage } from "../../api/types";
@@ -112,13 +113,7 @@ export class PollingLoop {
     };
   }
 
-  /**
-   * 启动长轮询
-   *
-   * 重入守卫：若已有轮询会话在运行，直接返回，绝不并发第二条循环。
-   * generation 令牌：reset()/新会话会让旧令牌过期，旧循环拿到过期结果后直接丢弃，
-   * 避免污染新会话状态。
-   */
+  /** 启动长轮询。 */
   async start(opts: StartPollingOpts): Promise<void> {
     if (this.pollingActive) {
       this.deps.debug("startPolling ignored: polling is already active");

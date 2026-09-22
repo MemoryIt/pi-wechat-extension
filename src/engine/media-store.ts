@@ -1,10 +1,12 @@
 /**
  * media-store.ts - 媒体落盘与魔数识别
  *
- * 从 wechat.ts 抽出的媒体存储逻辑：
+ * 负责媒体文件落盘与识别：
  * - ISO 周目录 / 文件类型魔数识别 / MIME 映射
  * - MediaStore：save（单文件落盘）、createSaveCallback（供 downloadMediaFromItem 使用）、
  *   downloadAll（批量下载并收集解密后的本地路径）
+ *
+ * 最初自 wechat.ts 抽出。
  */
 
 import { randomUUID } from "node:crypto";

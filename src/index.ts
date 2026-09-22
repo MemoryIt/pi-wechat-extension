@@ -5,9 +5,9 @@
  * - `wechat.ts` 提供 engine 单例与 setPi；
  * - `tool-send-file.ts` 注册发送文件工具；
  * - `commands.ts` 注册 /wechat 命令；
- * - `bridge.ts` 注册事件桥接（turn / meta 逻辑分别位于 turn.ts / meta.ts）。
+ * - `bridge/events.ts` 注册事件桥接（turn / meta 逻辑分别位于 turn.ts / meta.ts）。
  *
- * 事件桥接的核心约定见 bridge.ts。
+ * 事件桥接的核心约定见 bridge/events.ts。
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

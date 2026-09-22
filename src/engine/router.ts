@@ -1,13 +1,13 @@
 /**
  * router.ts - 消息路由（turn 执行 + 队列排空）
  *
- * 从 wechat.ts 抽出的「turn 执行 + 队列排空」职责，行为与抽取前逐字对应：
- * - execute                : 原 triggerAiInternal（媒体后台 / 文本 turn）
- * - drain                  : 原 safelyTriggerNext（20ms 延迟后取队首并执行）
- * - processMediaInBackground: 原同名私有方法
+ * 负责执行一轮 turn 与排空队列：
+ * - execute                : 媒体消息后台处理 / 文本 turn 交给宿主 agent
+ * - drain                  : 20ms 延迟后取队首并执行
+ * - processMediaInBackground: 后台下载并落盘媒体
  *
  * 仅依赖注入的窄接口（queue / mediaStore / mediaQueue / sender / host / opts / logger），
- * 不直接持有 WechatEngine，便于单测。
+ * 不直接持有 WechatEngine，便于单测。最初自 wechat.ts 抽出，行为保持一致。
  */
 
 import { MessageItemType } from "../../api/types.js";

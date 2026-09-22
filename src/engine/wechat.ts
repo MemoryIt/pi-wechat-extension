@@ -1,11 +1,10 @@
 /**
- * wechat.ts - 微信核心引擎（单用户版本）
- * 
- * 主要变化:
- * 1. 删除多用户相关逻辑 (userContexts Map, pendingMessages Map 等)
- * 2. requestId 改为精确到毫秒的时间戳格式
- * 3. 消息格式化简化为: {prefix} {content}
- * 4. 单用户固定凭证，运行时从 storage 加载
+ * wechat.ts - 微信引擎门面 / 组合根（单用户版本）
+ *
+ * 持有单用户凭证状态、TurnQueue、TypingController、MessageSender、
+ * MessageRouter、PollingLoop，并把它们装配为完整引擎。
+ * 对外提供 WechatHost 依赖注入、setPi / setConfig、单例 `engine`
+ * 与 createWechatEngine() 工厂。
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -296,6 +295,8 @@ export class WechatEngine {
 
   /**
    * 处理 slash command
+   *
+   * 注：opts 目前未使用（保留参数以保持调用签名一致）。
    */
   private async handleSlashCommand(msg: WeixinMessage, opts: { baseUrl: string; token: string }): Promise<void> {
     const trimmed = this.extractText(msg).trim();

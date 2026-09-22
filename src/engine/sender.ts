@@ -1,10 +1,12 @@
 /**
  * sender.ts - 出站消息发送器（单用户）
  *
- * 从 wechat.ts 提取，行为保持不变：
+ * 负责发送出站消息：
  * - 文本消息走官方 sendMessageWeixin
  * - 本地文件走官方 sendWeixinMediaFile（显示名以 basename 为准）
  * - sendWithRetry 指数退避 1000 * 2^(n-1)
+ *
+ * 最初自 wechat.ts 提取，行为保持不变。
  */
 
 import path from "node:path";

@@ -1,10 +1,9 @@
 /**
  * queue.ts - 轮次队列（纯状态容器）
  *
- * 从 wechat.ts 中抽出的队列 / 忙闲 / 去重状态，不依赖任何外部模块，
- * 便于单测。语义与抽取前逐一对应：
+ * 维护队列 / 忙闲 / 去重状态，不依赖任何外部模块，便于单测：
  * - pending          : 待处理消息（FIFO）
- * - busy             : 等价于原 isAiProcessing
+ * - busy             : 引擎是否正在处理一轮
  * - currentRequestId : 当前正在处理的 requestId
  * - processed        : 已处理 requestId -> 时间戳（防重）
  * - cleanupCounter   : 每 50 次 markRequestProcessed 触发一次清理
