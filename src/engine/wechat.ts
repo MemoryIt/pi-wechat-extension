@@ -21,6 +21,9 @@ import { isDebugEnabled } from "../shared/config.js";
 import { MediaStore } from "./media-store.js";
 import { sleep, formatTimestamp } from "../shared/time.js";
 import type { WechatApiOpts } from "../shared/types.js";
+import type { PiHost } from "../ports/pi-host.js";
+import { ChannelState } from "../channel/state.js";
+import type { Notifier } from "../channel/state.js";
 import { PollingLoop } from "./polling.js";
 import type { ConnectionState } from "./polling.js";
 import { TurnQueue, SerialTaskQueue } from "./queue.js";
@@ -36,16 +39,9 @@ export type { ConnectionState } from "./polling.js";
 
 /**
  * 窄接口：WechatEngine 只依赖 pi 的这三个方法，
- * 避免测试必须实现整个 ExtensionAPI。
+ * 避免测试必须实现整个 ExtensionAPI。等义于 ports 层的 PiHost。
  */
-export interface WechatHost {
-  appendEntry(customType: string, data?: unknown): void;
-  sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }): void;
-  sendMessage(
-    message: { customType: string; content: string; display: boolean },
-    options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
-  ): void;
-}
+export type WechatHost = PiHost;
 
 export type WechatConfig = WechatApiOpts;
 
@@ -89,18 +85,8 @@ export class WechatEngine {
   // === 轮询会话（职责已抽到独立 PollingLoop，通过 deps 回调宿主能力）===
   private poller: PollingLoop;
 
-  private accountId: string | null = null;
-
-  // === 单用户凭证（运行时加载）===
-  private singleUserId: string | null = null;
-  private singleContextToken: string | null = null;
-
-  // === 请求追踪（仅 requestId）===
-  private lastRequestIdMs = -1;
-  private requestIdSeq = 0;
-
-  // === 终端消息处理状态（仍留 engine）===
-  private isTerminalMessageProcessing = false;
+  // === 运行时会话状态（凭证 / 配置 / 宿主 / 通知 / 终端标志 / 请求追踪）===
+  private state = new ChannelState();
 
   // === 消息队列 / 忙闲 / 去重（抽到 TurnQueue）===
   private queue = new TurnQueue<{ msg: WeixinMessage; requestId: string }>();
@@ -117,13 +103,6 @@ export class WechatEngine {
 
   // === 消息路由（turn 执行 + 队列排空）===
   private router: MessageRouter;
-
-  // === 注入依赖（host / config）===
-  private host: WechatHost | null = null;
-  private config: WechatConfig | null = null;
-
-  // === 通知回调（B4：会话过期时提示用户）===
-  private notifier: ((message: string, type?: "info" | "warning" | "error") => void) | null = null;
 
   constructor(ports: WechatEnginePorts = {}) {
     const outbound =
@@ -148,7 +127,7 @@ export class WechatEngine {
 
     this.typing = new TypingController({
       outbound,
-      getContextToken: () => this.singleContextToken,
+      getContextToken: () => this.state.contextToken,
       debug: this.logger.debug.bind(this.logger),
       error: this.logger.error.bind(this.logger),
     });
@@ -163,21 +142,21 @@ export class WechatEngine {
       mediaStore: this.mediaStore,
       mediaQueue: this.mediaQueue,
       sender: this.sender,
-      getHost: () => this.host,
+      getHost: () => this.state.host,
       getOpts: () => this.getCurrentOpts(),
       logger: this.logger,
     });
 
     this.poller = new PollingLoop({
       ensureSession: () => this.initSingleUser(),
-      getAccountId: () => this.accountId,
+      getAccountId: () => this.state.accountId,
       loadCursor: (accountId) => storage.loadSyncCursor(accountId),
       saveCursor: (accountId, cursor) => storage.saveSyncCursor(accountId, cursor),
       inbound,
       onMessage: (msg, opts) => this.handleMessage(msg, opts),
       onNeedsRelogin: () => {
         this.logger.debug("Session expired, needs relogin");
-        this.notifier?.("微信登录已失效，请执行 /wechat login 重新登录", "error");
+        this.state.notifier?.("微信登录已失效，请执行 /wechat login 重新登录", "error");
       },
       debug: this.logger.debug.bind(this.logger),
       error: this.logger.error.bind(this.logger),
@@ -186,21 +165,21 @@ export class WechatEngine {
   }
 
   setHost(host: WechatHost): void {
-    this.host = host;
+    this.state.host = host;
   }
 
-  setNotifier(notifier: (message: string, type?: "info" | "warning" | "error") => void): void {
-    this.notifier = notifier;
+  setNotifier(notifier: Notifier): void {
+    this.state.notifier = notifier;
   }
 
   setConfig(config: WechatConfig): void {
-    this.config = config;
+    this.state.config = config;
   }
 
   /** 可选字段各自覆盖：未提供的依赖保持不变。 */
   configure(deps: { host?: WechatHost; config?: WechatConfig }): void {
-    if (deps.host) this.host = deps.host;
-    if (deps.config) this.config = deps.config;
+    if (deps.host) this.state.host = deps.host;
+    if (deps.config) this.state.config = deps.config;
   }
 
   // === getter ===
@@ -210,11 +189,11 @@ export class WechatEngine {
 
   // === 终端处理状态 getter/setter（新增）===
   getTerminalProcessing(): boolean {
-    return this.isTerminalMessageProcessing;
+    return this.state.isTerminalMessageProcessing;
   }
 
   setTerminalProcessing(value: boolean): void {
-    this.isTerminalMessageProcessing = value;
+    this.state.isTerminalMessageProcessing = value;
   }
 
   // ============== 核心方法 ==============
@@ -231,16 +210,16 @@ export class WechatEngine {
       return false;
     }
 
-    this.singleUserId = credentials.userId;
-    this.accountId = credentials.accountId;
+    this.state.userId = credentials.userId;
+    this.state.accountId = credentials.accountId;
 
     // 加载 context token
-    this.singleContextToken = await storage.getSingleUserContextToken();
-    if (!this.singleContextToken) {
+    this.state.contextToken = await storage.getSingleUserContextToken();
+    if (!this.state.contextToken) {
       this.logger.warn("No context token found, replies may fail");
     }
 
-    this.logger.debug(`Single user initialized: userId=${this.singleUserId}, contextToken=${this.singleContextToken ? 'present' : 'MISSING'}`);
+    this.logger.debug(`Single user initialized: userId=${this.state.userId}, contextToken=${this.state.contextToken ? 'present' : 'MISSING'}`);
     return true;
   }
 
@@ -272,15 +251,15 @@ export class WechatEngine {
     }
 
     // 更新 contextToken（如果消息中有）
-    if (msg.context_token && msg.context_token !== this.singleContextToken) {
+    if (msg.context_token && msg.context_token !== this.state.contextToken) {
       this.logger.debug(`Updating contextToken from message`);
-      this.singleContextToken = msg.context_token;
+      this.state.contextToken = msg.context_token;
       // contextToken 变化后旧 typing ticket 立即失效
       this.typing.invalidateTicket();
       // 持久化
-      if (this.accountId && this.singleUserId) {
-        await storage.saveContextToken(this.accountId, this.singleUserId, {
-          displayName: this.singleUserId,
+      if (this.state.accountId && this.state.userId) {
+        await storage.saveContextToken(this.state.accountId, this.state.userId, {
+          displayName: this.state.userId,
           contextToken: msg.context_token,
           lastMessageAt: Date.now(),
         });
@@ -298,7 +277,7 @@ export class WechatEngine {
   async triggerAi(msg: WeixinMessage, requestId: string, opts: WechatApiOpts): Promise<void> {
     // 只有当 AI 空闲且没有终端消息在处理时，才直接发送
     // 否则加入队列等待
-    if (this.queue.isBusy() || this.isTerminalMessageProcessing) {
+    if (this.queue.isBusy() || this.state.isTerminalMessageProcessing) {
       // 加入队列
       this.queue.enqueue({ msg, requestId });
       this.logger.debug(`AI is ${this.queue.isBusy() ? 'processing' : 'terminal processing'}, queued message (queue size: ${this.queue.size})`);
@@ -360,7 +339,7 @@ export class WechatEngine {
   }
 
   private getCurrentOpts(): WechatApiOpts | null {
-    const cfg = this.config;
+    const cfg = this.state.config;
     return cfg ? { baseUrl: cfg.baseUrl, token: cfg.token } : null;
   }
 
@@ -370,15 +349,15 @@ export class WechatEngine {
    * 组装当前单用户凭证；任一缺失返回 null。
    */
   private getCredentials(): WechatCredentials | null {
-    const config = this.config;
-    if (!config || !this.singleUserId || !this.singleContextToken) {
+    const config = this.state.config;
+    if (!config || !this.state.userId || !this.state.contextToken) {
       return null;
     }
     return {
       baseUrl: config.baseUrl,
       token: config.token,
-      userId: this.singleUserId,
-      contextToken: this.singleContextToken,
+      userId: this.state.userId,
+      contextToken: this.state.contextToken,
     };
   }
 
@@ -458,17 +437,12 @@ export class WechatEngine {
     this.typing.reset();
 
     this.queue.reset();
-    this.isTerminalMessageProcessing = false;
-    this.lastRequestIdMs = -1;
-    this.requestIdSeq = 0;
+
+    // 清空会话状态：凭证 + 终端标志 + 请求追踪（config/host/notifier 保留）
+    this.state.resetSession();
 
     // 轮询部分：generation 过期、abort、重建 controller、清 cursor/连接状态/失败计数
     this.poller.reset();
-
-    // 清空账号相关状态
-    this.accountId = null;
-    this.singleUserId = null;
-    this.singleContextToken = null;
 
     this.logger.debug("Engine state reset");
   }
@@ -481,13 +455,13 @@ export class WechatEngine {
    */
   private generateRequestId(): string {
     const now = Date.now();
-    if (now !== this.lastRequestIdMs) {
-      this.lastRequestIdMs = now;
-      this.requestIdSeq = 0;
+    if (now !== this.state.lastRequestIdMs) {
+      this.state.lastRequestIdMs = now;
+      this.state.requestIdSeq = 0;
     } else {
-      this.requestIdSeq += 1;
+      this.state.requestIdSeq += 1;
     }
-    return `${formatTimestamp(new Date(now))}${String(this.requestIdSeq).padStart(3, "0")}`;
+    return `${formatTimestamp(new Date(now))}${String(this.state.requestIdSeq).padStart(3, "0")}`;
   }
 }
 

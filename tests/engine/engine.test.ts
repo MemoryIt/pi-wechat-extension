@@ -65,7 +65,7 @@ beforeEach(async () => {
     host: pi,
     config: { baseUrl: opts.baseUrl, token: opts.token },
   });
-  (engine as unknown as AnyEngine).isTerminalMessageProcessing = false;
+  (engine as unknown as AnyEngine).state.isTerminalMessageProcessing = false;
 
   await seedSingleUser(storage);
 });
@@ -246,7 +246,7 @@ test("D16 目标：contextToken 变化后应重新获取 typing ticket", async (
   const t1 = await engine.getTypingTicket();
   expect(t1).toBe("T1");
 
-  (engine as unknown as AnyEngine).singleContextToken = "CTX-NEW";
+  (engine as unknown as AnyEngine).state.contextToken = "CTX-NEW";
   outboundMock.getTypingTicket.mockResolvedValue("T2");
 
   const t2 = await engine.getTypingTicket();
