@@ -66,8 +66,8 @@ note as ScopeNote
   本图展开 **03-components.puml** 中的 Channel Component。
   - 端口仅列 Channel 直接使用的 **WechatInbound / WechatOutbound / WechatMedia / PiHost**；
     `WechatAuth` 由 bridge / index 使用，不在此图。
-  - `channel.ts` 当前在缺省时 `createWechatInbound/Outbound/Media` 构造默认实现
-    （组合根职责，待迁 index）；注入 fake 时协作类只依赖端口。
+  - `channel.ts` 只依赖注入的端口；真实端口实现由组合根 `src/index.ts` 组装
+    （`ChannelState` + inbound/outbound/media）后注入，测试则注入 fake。
   - 用户、微信 App / iLink、本地目录、完整 pi API 不在此图重复。
   - 端口/适配器边界见 **03b-ports-adapters.puml**；类级细节见 **04-class-channel.puml**。
 end note

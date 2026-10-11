@@ -75,6 +75,8 @@ package "src/channel（编排器 + 状态 + 协作类）" {
     + requestIdSeq : number
     --
     + resetSession()
+    + getCredentials() : WechatCredentials | null
+    + getOpts() : WechatApiOpts | null
   }
 
   class PollingLoop <<collaborator>> {
@@ -205,14 +207,14 @@ package "注入 deps / 类型" {
     + host? : PiHost
     + config? : WechatApiOpts
     + notifier? : Notifier
-    + ports? : ChannelPorts
+    + ports : ChannelPorts
     + logger? : PluginLogger
     + sleep? : (ms) => Promise<void>
   }
   interface ChannelPorts <<deps>> {
-    + inbound? : WechatInbound
-    + outbound? : WechatOutbound
-    + media? : WechatMedia
+    + inbound : WechatInbound
+    + outbound : WechatOutbound
+    + media : WechatMedia
   }
   interface PollingLoopDeps <<deps>> {
     + ensureSession() : Promise<boolean>
@@ -276,7 +278,10 @@ package "外部依赖" {
   class "shared" as shared <<module>> {
     config / logger / time / types
   }
-  class "adapters（默认工厂）" as adapters <<module>> {
+  class "index（组合根）" as index <<module>> {
+    createExtension：组装 ChannelState + adapters + Channel
+  }
+  class "adapters（组合根组装）" as adapters <<module>> {
     createWechatInbound / createWechatOutbound / createWechatMedia / createWechatAuth
   }
 }
@@ -328,7 +333,7 @@ ChannelPorts ..> WechatInbound
 ChannelPorts ..> WechatOutbound
 ChannelPorts ..> WechatMedia
 
-' ============ 默认 adapters 实现端口 ============
+' ============ adapters 实现端口 ============
 adapters ..> WechatInbound : 实现
 adapters ..> WechatOutbound : 实现
 adapters ..> WechatMedia : 实现
@@ -338,15 +343,17 @@ adapters ..> WechatAuth : 实现
 Channel ..> PiHost : setHost / state.host
 Channel ..> storage
 Channel ..> shared
-Channel ..> adapters : 缺省构造（组合根职责，待迁 index）
-Channel ..> WechatCredentials : getCredentials / getOpts
+index ..> adapters : 组装端口实现
+index ..> Channel : new Channel({ state, ports, logger })
+index ..> ChannelState : new ChannelState()
+Channel ..> WechatCredentials : getCredentials / getOpts（委托 state）
 
 ' ============ 说明 ============
 note right of Channel
-  编排器 / 组合根（临时）：
+  编排器：
   - 构造时创建全部协作类（组合关系）
   - 只依赖 PiHost / WechatInbound / WechatOutbound / WechatMedia 端口
-  - 未注入 ports 时构造默认 adapters（待迁 index）
+  - ports 为必填，由组合根 index 组装真实实现（及 ChannelState）后注入
   - 无模块级单例；createExtension() 每次新建独立实例
 end note
 

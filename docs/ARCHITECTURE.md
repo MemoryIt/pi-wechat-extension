@@ -21,13 +21,13 @@
 src/index.ts (组合根 createExtension)
    ├──→ bridge/*         pi.on 事件、命令、工具（注入 Channel / WechatAuth）
    ├──→ channel/*        Channel + 协作类 + ChannelState
-   ├──→ adapters/auth    默认 WechatAuth 工厂
+   ├──→ adapters/*       inbound / outbound / media / auth 默认工厂（组装端口）
    └──→ ports/*          端口类型
 
+index    ──→ adapters/*（组装 ChannelState + inbound/outbound/media + Channel）
 bridge   ──→ channel（类型）        bridge   ──→ ports/*（WechatAuth）
 channel  ──→ ports/*（inbound/outbound/media/pi-host）
 channel  ──→ storage/* / shared/*
-channel  ──→ adapters/*（缺省构造默认端口实现；组合根职责，计划迁往 index —— 见 S6）
 adapters ──→ ports/* + vendor（api / auth / cdn / media / messaging / util）
 ports    ──→ 仅 ports/types.ts 转发 vendor 的 api/types
 shared   ──→ vendor/util（redact / file-logger 再导出边界）
@@ -38,7 +38,7 @@ storage  ──→ shared/*
 - **端口层无运行时逻辑**：`src/ports/*.ts` 仅类型 / 常量（唯一例外是 `types.ts` 的 vendor 协议类型转发）。
 - **隔离 vendor**：除 `src/adapters/**`、`src/ports/types.ts`、`src/shared/redact.ts`、`src/shared/file-logger.ts` 外，自写代码不 import `api/ auth/ cdn/ media/ messaging/ util/`。
 - **通道不得回溯旧门面**：旧的引擎目录已删除，`channel` 只依赖端口与协作类。
-- **过渡状态**：`src/channel/channel.ts` 当前在未注入端口时构造默认 adapters，这是临时保留的组合根职责（注释标注供后续 S6 迁移到 `index`）。目标方向是 `channel → ports`、`adapters → ports + vendor`。
+- **组合根组装端口**：`src/index.ts` 创建 `ChannelState` 与 `inbound/outbound/media` adapters，并把同一 state 注入 outbound 的 `getCredentials` 与 `Channel`；`channel` 只依赖 `ports/*`、`storage/*`、`shared/*`，不 import adapters。
 
 ## 3. 模块职责与关键导出
 
@@ -46,7 +46,7 @@ storage  ──→ shared/*
 
 | 模块 | 职责 | 关键导出 |
 |------|------|----------|
-| `src/index.ts` | 组合根：`createExtension(deps?)` 显式组装 `PiHost + Channel + WechatAuth`；把 `ExtensionAPI` 适配为 `PiHost`；注册工具 / 命令 / 事件 | `createExtension`、`ExtensionDeps`、`default` |
+| `src/index.ts` | 组合根：`createExtension(deps?)` 显式组装 `ChannelState + adapters（inbound/outbound/media）+ Channel + WechatAuth`；把 `ExtensionAPI` 适配为 `PiHost`；注册工具 / 命令 / 事件 | `createExtension`、`ExtensionDeps`、`default` |
 | `src/ports/types.ts` | 端口层类型边界：集中转发 vendor 协议类型与 `WechatCredentials` | `WeixinMessage`、`MessageItem`、`MessageItemType`、`WechatCredentials` |
 | `src/ports/inbound.ts` | 入站端口：拉取更新 | `WechatInbound`、`WechatInboundGetUpdatesParams`、`WechatInboundGetUpdatesResult` |
 | `src/ports/outbound.ts` | 出站端口：文本 / 文件 / typing / ticket | `WechatOutbound` |
@@ -247,5 +247,4 @@ storage  ──→ shared/*
 - **配置/日志/时间等通用能力** → `src/shared/`。
 - **凭证、cursor、context token 等持久化** → `src/storage/`；新增写操作请复用 `writeJsonAtomic` + 按路径串行队列。
 - **不要绕过 `PiHost` 窄接口**：新增 pi 依赖时扩展 `PiHost` 并在 `index.ts` 的 `piToHost()` 适配，保持测试可注入。
-- **移除过渡职责**：`channel.ts` 中默认构造 adapters 的逻辑应迁往 `src/index.ts`（组合根），使 `channel → ports` 成为唯一依赖方向。
 - 开发/测试流程与分层见第 7 节；提交前保持 `bun run test` 与 `bun run typecheck` 通过。

@@ -40,7 +40,7 @@ Container_Boundary(host, "pi coding agent 进程 (Node.js ≥ 22)") {
 Rel(user, bridge, "/wechat login 等终端命令", $tags="allowed")
 Rel(index, bridge, "装配 / 注册", $tags="allowed")
 Rel(index, channel, "new Channel + setHost", $tags="allowed")
-Rel(index, adapter, "默认 WechatAuth 工厂", $tags="allowed")
+Rel(index, adapter, "组装 inbound/outbound/media 端口实现，默认 WechatAuth 工厂", $tags="allowed")
 Rel(bridge, channel, "调用通道公共方法（startPolling / sendReply / …）", $tags="allowed")
 Rel(bridge, ports, "WechatAuth（类型）", $tags="allowed")
 Rel(bridge, storage, "凭证 / 账号", $tags="allowed")
@@ -49,7 +49,6 @@ Rel(bridge, piApi, "事件 / 命令 / 工具 / 注入消息", $tags="event")
 Rel(channel, ports, "依赖端口接口", $tags="allowed")
 Rel(channel, storage, "凭证 / cursor / context token", $tags="allowed")
 Rel(channel, shared, "配置 / 日志 / 时间", $tags="allowed")
-Rel(channel, adapter, "缺省构造默认端口实现（组合根职责，待迁 index）", $tags="allowed")
 Rel(adapter, ports, "实现端口", $tags="allowed")
 
 Rel(storage, stateDir, "读写凭证 / cursor", $tags="allowed")
@@ -66,7 +65,8 @@ note as Constraints
     channel 不得 import bridge；storage 不得 import channel / bridge
   - vendor（api / auth / cdn / media / messaging / util）只允许被 adapters
     （及 ports/types、shared/redact、shared/file-logger 两个再导出边界）引用
-  - 过渡：channel 目前缺省构造默认 adapters，目标迁往 index（组合根）
+  - index 组装 adapters（inbound/outbound/media）与 ChannelState 并注入 Channel；
+    channel 只依赖 ports / storage / shared
   - Channel 内部细节见 **03a-channel.puml**；端口/适配器边界见 **03b-ports-adapters.puml**
 end note
 

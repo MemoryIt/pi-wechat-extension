@@ -47,7 +47,7 @@ System_Ext(ilink, "微信 iLink 后端", "云端机器人 API", $tags="external"
 
 ' --- 关系 -----------------------------------------------------------------
 Rel(index, consumers, "组装并注入", $tags="allowed")
-Rel(index, adapters, "缺省构造真实 adapter", $tags="allowed")
+Rel(index, adapters, "组装真实 adapter", $tags="allowed")
 Rel(consumers, wechatInbound, "依赖", $tags="allowed")
 Rel(consumers, wechatOutbound, "依赖", $tags="allowed")
 Rel(consumers, wechatMedia, "依赖", $tags="allowed")
