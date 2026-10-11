@@ -2,86 +2,57 @@
  * tests/setup/engine-harness.ts
  *
  * L2 引擎层夹具：
- * - 在导入 wechat.ts 之前，用 mock.module 顶掉它依赖的底层边界模块
- *   （api/api、api/types、messaging/send、messaging/send-media、media/media-download）。
- * - 暴露可控的 mock 对象与便捷的凭证 seed / fake pi。
+ * - 只安装与微信无关的基础 mock（pi SDK / typebox / util/logger），
+ *   不再对任何 vendor 路径做模块级替换。
+ * - 暴露可控的端口 fake（inbound/outbound/media）与便捷的凭证 seed / fake pi。
+ * - 测试通过 `createWechatEngine({ inbound, outbound, media })` 注入 fake ports。
  *
- * 不读、不改底层模块实现；mock 只在测试运行时生效。
+ * 不读、不改底层模块实现；fake 只在测试运行时生效。
  */
 import { mock } from "bun:test";
-import { installBaseMocks, repoPath } from "./mocks";
+import { installBaseMocks } from "./mocks";
+import { MessageItemType } from "../../src/ports/types.js";
 
-// ---- 可控边界 mock --------------------------------------------------------
+// ---- 端口 fake ------------------------------------------------------------
 
-export const apiMock = {
-  getUpdates: mock(async (_opts: unknown) => ({ msgs: [], get_updates_buf: "" })),
-  sendTyping: mock(async (_opts: unknown) => ({})),
-  getConfig: mock(async (_opts: unknown) => ({ ret: 0, typing_ticket: "TICKET-1" })),
+export const inboundMock = {
+  getUpdates: mock(async (_params: unknown) => ({ messages: [], cursor: "" })),
 };
 
-export const sendMock = {
-  sendMessageWeixin: mock(async (_opts: unknown) => ({})),
-};
-
-export const sendMediaMock = {
-  sendWeixinMediaFile: mock(async (_opts: unknown) => ({})),
+export const outboundMock = {
+  sendText: mock(async (_text: string) => {}),
+  sendFile: mock(async (_localPath: string) => {}),
+  sendTyping: mock(async (_status: 1 | 2, _ticket: string) => {}),
+  getTypingTicket: mock(async () => "TICKET-1" as string | null),
 };
 
 export const mediaMock = {
-  downloadMediaFromItem: mock(async (_item: unknown, _opts: unknown) => ({})),
+  download: mock(async (_item: unknown, _deps: unknown) => null as { path: string } | null),
 };
 
-/** 与 api/types.ts 的 MessageItemType 对齐（只用到 TEXT）。 */
-export const MessageItemType = {
-  TEXT: 1,
-  IMAGE: 2,
-  VOICE: 3,
-  FILE: 4,
-  VIDEO: 5,
-} as const;
+export { MessageItemType };
 
-let installed = false;
+/** 把所有端口 fake 恢复到默认实现（清空调用记录与自定义返回值）。 */
+export function resetPortMocks(): void {
+  inboundMock.getUpdates.mockReset();
+  inboundMock.getUpdates.mockImplementation(async () => ({ messages: [], cursor: "" }));
 
-/** 把边界 mock 恢复到默认实现（清空调用记录与自定义返回值）。 */
-export function resetBoundaryMocks(): void {
-  apiMock.getUpdates.mockReset();
-  apiMock.getUpdates.mockImplementation(async () => ({ msgs: [], get_updates_buf: "" }));
-  apiMock.sendTyping.mockReset();
-  apiMock.sendTyping.mockImplementation(async () => ({}));
-  apiMock.getConfig.mockReset();
-  apiMock.getConfig.mockImplementation(async () => ({ ret: 0, typing_ticket: "TICKET-1" }));
-  sendMock.sendMessageWeixin.mockReset();
-  sendMock.sendMessageWeixin.mockImplementation(async () => ({}));
-  sendMediaMock.sendWeixinMediaFile.mockReset();
-  sendMediaMock.sendWeixinMediaFile.mockImplementation(async () => ({}));
-  mediaMock.downloadMediaFromItem.mockReset();
-  mediaMock.downloadMediaFromItem.mockImplementation(async () => ({}));
+  outboundMock.sendText.mockReset();
+  outboundMock.sendText.mockImplementation(async () => {});
+  outboundMock.sendFile.mockReset();
+  outboundMock.sendFile.mockImplementation(async () => {});
+  outboundMock.sendTyping.mockReset();
+  outboundMock.sendTyping.mockImplementation(async () => {});
+  outboundMock.getTypingTicket.mockReset();
+  outboundMock.getTypingTicket.mockImplementation(async () => "TICKET-1");
+
+  mediaMock.download.mockReset();
+  mediaMock.download.mockImplementation(async () => null);
 }
 
+/** 安装基础 mock。保留旧名以兼容测试调用；不再 mock 任何 vendor 路径。 */
 export function installEngineMocks(): void {
   installBaseMocks();
-  if (installed) return;
-  installed = true;
-
-  const apiModule = () => apiMock;
-  mock.module(repoPath("api", "api.js"), apiModule);
-  mock.module(repoPath("api", "api.ts"), apiModule);
-
-  const typesModule = () => ({ MessageItemType });
-  mock.module(repoPath("api", "types.js"), typesModule);
-  mock.module(repoPath("api", "types.ts"), typesModule);
-
-  const sendModule = () => sendMock;
-  mock.module(repoPath("messaging", "send.js"), sendModule);
-  mock.module(repoPath("messaging", "send.ts"), sendModule);
-
-  const sendMediaModule = () => sendMediaMock;
-  mock.module(repoPath("messaging", "send-media.js"), sendMediaModule);
-  mock.module(repoPath("messaging", "send-media.ts"), sendMediaModule);
-
-  const mediaModule = () => mediaMock;
-  mock.module(repoPath("media", "media-download.js"), mediaModule);
-  mock.module(repoPath("media", "media-download.ts"), mediaModule);
 }
 
 // ---- 被测模块 / 依赖加载 --------------------------------------------------
@@ -148,32 +119,6 @@ export async function seedSingleUser(storage: Awaited<ReturnType<typeof importSt
   });
   await storage.upsertAccount({ accountId: "acc1", displayName: "微信账号", loginAt: Date.now() });
   await storage.saveContextToken("acc1", "U1", { displayName: "U1", contextToken: "CTX-1" });
-}
-
-/** 构造一个「第一次返回 batch，之后挂起」的可控 getUpdates。 */
-export function controllableGetUpdates() {
-  const pendingResolvers: Array<(value: unknown) => void> = [];
-  let callCount = 0;
-  const impl = (_o: unknown) => {
-    callCount += 1;
-    if (callCount === 1) {
-      return Promise.resolve({ msgs: [], get_updates_buf: "cursor-0" });
-    }
-    return new Promise((resolve) => {
-      pendingResolvers.push(resolve);
-    });
-  };
-  return {
-    impl,
-    get callCount() {
-      return callCount;
-    },
-    resolveAll(value: unknown) {
-      while (pendingResolvers.length > 0) {
-        pendingResolvers.shift()!(value);
-      }
-    },
-  };
 }
 
 export function sleep(ms: number): Promise<void> {

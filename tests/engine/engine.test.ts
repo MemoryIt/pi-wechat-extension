@@ -2,7 +2,7 @@
  * tests/engine/engine.test.ts
  *
  * L2：直接测试 wechat.ts 的 WechatEngine。
- * 底层边界（api/messaging/media）用 mock.module 顶掉，storage/config 用真实实现 + 临时目录。
+ * 微信边界经注入的端口 fake（inbound/outbound/media）观测，storage/config 用真实实现 + 临时目录。
  *
  * 覆盖：D3 轮询重入、D6 同步抛错被吞、D7 队列 rejection 未处理、
  *       D9 未传 AbortSignal、D13 requestId 同毫秒冲突、
@@ -17,10 +17,9 @@ import {
   importStorage,
   importConfig,
   createEnginePi,
-  resetBoundaryMocks,
-  apiMock,
-  sendMock,
-  sendMediaMock,
+  resetPortMocks,
+  inboundMock,
+  outboundMock,
   mediaMock,
   opts,
   textMessage,
@@ -33,28 +32,40 @@ import {
 installEngineMocks();
 
 const engineModule = await importEngine();
-const { engine, setPi, setConfig, createWechatEngine } = engineModule;
+const { createWechatEngine } = engineModule;
 const storage = await importStorage();
 const config = await importConfig();
 
 type AnyEngine = Record<string, any>;
 
 let pi: ReturnType<typeof createEnginePi>;
+let engine: ReturnType<typeof createWechatEngine>;
+
+function makeEngine(
+  overrides: Partial<{ host: unknown; config: unknown; inbound: unknown; outbound: unknown; media: unknown }> = {},
+) {
+  return createWechatEngine({
+    host: overrides.host as never,
+    config: overrides.config as never,
+    inbound: (overrides.inbound ?? inboundMock) as never,
+    outbound: (overrides.outbound ?? outboundMock) as never,
+    media: (overrides.media ?? mediaMock) as never,
+  });
+}
 
 beforeEach(async () => {
   resetAgentDir();
-  resetBoundaryMocks();
+  resetPortMocks();
   config.clearConfigCache();
   delete process.env.WECHAT_DEBUG;
   delete process.env.WECHAT_MEDIA_PATH;
 
   pi = createEnginePi();
-  setPi(pi as never);
-  setConfig({ baseUrl: opts.baseUrl, token: opts.token });
-
-  engine.reset();
-  const e = engine as unknown as AnyEngine;
-  e.isTerminalMessageProcessing = false;
+  engine = makeEngine({
+    host: pi,
+    config: { baseUrl: opts.baseUrl, token: opts.token },
+  });
+  (engine as unknown as AnyEngine).isTerminalMessageProcessing = false;
 
   await seedSingleUser(storage);
 });
@@ -66,10 +77,10 @@ beforeEach(async () => {
 test("基线：startPolling 消费文本消息、写入 wechat_meta 并持久化 cursor", async () => {
   let call = 0;
   const resolvers: Array<(v: unknown) => void> = [];
-  apiMock.getUpdates.mockImplementation(() => {
+  inboundMock.getUpdates.mockImplementation(() => {
     call += 1;
     if (call === 1) {
-      return Promise.resolve({ msgs: [textMessage("hello engine")], get_updates_buf: "cursor-1" });
+      return Promise.resolve({ messages: [textMessage("hello engine")], cursor: "cursor-1" });
     }
     return new Promise((res) => resolvers.push(res));
   });
@@ -83,7 +94,7 @@ test("基线：startPolling 消费文本消息、写入 wechat_meta 并持久化
   expect(await storage.loadSyncCursor("acc1")).toBe("cursor-1");
 
   engine.stopPolling();
-  resolvers.splice(0).forEach((r) => r({ msgs: [], get_updates_buf: "cursor-1" }));
+  resolvers.splice(0).forEach((r) => r({ messages: [], cursor: "cursor-1" }));
   await p;
 });
 
@@ -93,10 +104,10 @@ test("基线：startPolling 消费文本消息、写入 wechat_meta 并持久化
 
 test("D3 目标：重复 startPolling 不应并发两条轮询循环", async () => {
   const resolvers: Array<() => void> = [];
-  apiMock.getUpdates.mockImplementation(
+  inboundMock.getUpdates.mockImplementation(
     () =>
       new Promise((resolve) => {
-        resolvers.push(() => resolve({ msgs: [], get_updates_buf: "" }));
+        resolvers.push(() => resolve({ messages: [], cursor: "" }));
       }),
   );
 
@@ -104,7 +115,7 @@ test("D3 目标：重复 startPolling 不应并发两条轮询循环", async () 
   const p2 = engine.startPolling(opts);
 
   await sleep(60);
-  expect(apiMock.getUpdates).toHaveBeenCalledTimes(1);
+  expect(inboundMock.getUpdates).toHaveBeenCalledTimes(1);
 
   engine.stopPolling();
   resolvers.splice(0).forEach((fn) => fn());
@@ -118,7 +129,7 @@ test("D3 目标：重复 startPolling 不应并发两条轮询循环", async () 
 test("D9 限制说明：底层 getUpdates 不接受 AbortSignal（核心层改用 Promise.race 抢跑）", async () => {
   let captured: Record<string, unknown> | null = null;
   const resolvers: Array<(v: unknown) => void> = [];
-  apiMock.getUpdates.mockImplementation((o: unknown) => {
+  inboundMock.getUpdates.mockImplementation((o: unknown) => {
     captured = o as Record<string, unknown>;
     return new Promise((res) => resolvers.push(res));
   });
@@ -127,22 +138,22 @@ test("D9 限制说明：底层 getUpdates 不接受 AbortSignal（核心层改�
   await waitFor(() => captured !== null);
 
   expect(captured).not.toBeNull();
-  // 这是底层限制：api.getUpdates 的签名没有 AbortSignal，核心层无法把 signal
+  // 这是底层限制：getUpdates 的签名没有 AbortSignal，核心层无法把 signal
   // 透传下去。因此 stopPolling 用 Promise.race 让循环迅速退出，而在途请求
   // 仍会在后台直到自身超时。
   expect("signal" in (captured as Record<string, unknown>)).toBe(false);
 
   engine.stopPolling();
-  resolvers.splice(0).forEach((r) => r({ msgs: [], get_updates_buf: "" }));
+  resolvers.splice(0).forEach((r) => r({ messages: [], cursor: "" }));
   await p;
 });
 
 test("D9 目标：stopPolling 后 startPolling 应在 300ms 内 resolve", async () => {
   // getUpdates 永不 resolve，模拟底层长轮询挂起
-  apiMock.getUpdates.mockImplementation(() => new Promise(() => {}));
+  inboundMock.getUpdates.mockImplementation(() => new Promise(() => {}));
 
   const p = engine.startPolling(opts);
-  await waitFor(() => apiMock.getUpdates.mock.calls.length >= 1);
+  await waitFor(() => inboundMock.getUpdates.mock.calls.length >= 1);
 
   const started = Date.now();
   engine.stopPolling();
@@ -191,17 +202,14 @@ test("D6 目标：sendUserMessage 抛错后应释放 isAiProcessing 且不冒泡
 // D14：sendFileToUser 只以本地文件名提交（底层不支持自定义显示名）
 // ---------------------------------------------------------------------------
 
-test("基线：sendFileToUser 以本地文件名提交底层发送（不再传 display-name 字段）", async () => {
+test("基线：sendFileToUser 以本地文件路径提交底层发送（不再传 display-name 字段）", async () => {
   await engine.initSingleUser();
   await engine.sendFileToUser("/tmp/sample.pptx");
 
-  expect(sendMediaMock.sendWeixinMediaFile).toHaveBeenCalledTimes(1);
-  const arg = sendMediaMock.sendWeixinMediaFile.mock.calls[0][0] as Record<string, unknown>;
-  expect(arg.filePath).toBe("/tmp/sample.pptx");
-  expect(JSON.stringify(arg)).toContain("sample.pptx");
-  // 底层不支持自定义显示名，不得再传 fileName / displayName 之类的无效字段
-  expect("fileName" in arg).toBe(false);
-  expect("displayName" in arg).toBe(false);
+  expect(outboundMock.sendFile).toHaveBeenCalledTimes(1);
+  expect(outboundMock.sendFile).toHaveBeenCalledWith("/tmp/sample.pptx");
+  // 端口只有本地路径一个参数，底层不支持自定义显示名
+  expect(outboundMock.sendFile.mock.calls[0].length).toBe(1);
 });
 
 // ---------------------------------------------------------------------------
@@ -233,17 +241,54 @@ test("D15 目标：应能识别非首条文本中的 slash command", () => {
 
 test("D16 目标：contextToken 变化后应重新获取 typing ticket", async () => {
   await engine.initSingleUser();
-  apiMock.getConfig.mockResolvedValue({ ret: 0, typing_ticket: "T1" });
+  outboundMock.getTypingTicket.mockResolvedValue("T1");
 
   const t1 = await engine.getTypingTicket();
   expect(t1).toBe("T1");
 
   (engine as unknown as AnyEngine).singleContextToken = "CTX-NEW";
-  apiMock.getConfig.mockResolvedValue({ ret: 0, typing_ticket: "T2" });
+  outboundMock.getTypingTicket.mockResolvedValue("T2");
 
   const t2 = await engine.getTypingTicket();
   expect(t2).toBe("T2");
-  expect(apiMock.getConfig).toHaveBeenCalledTimes(2);
+  expect(outboundMock.getTypingTicket).toHaveBeenCalledTimes(2);
+});
+
+test("D16 目标：ticket 缓存 60s TTL 内命中、过期后重新获取", async () => {
+  await engine.initSingleUser();
+  outboundMock.getTypingTicket.mockResolvedValue("T1");
+
+  expect(await engine.getTypingTicket()).toBe("T1");
+  // TTL 内命中缓存
+  expect(await engine.getTypingTicket()).toBe("T1");
+  expect(outboundMock.getTypingTicket).toHaveBeenCalledTimes(1);
+
+  const realNow = Date.now;
+  Date.now = () => realNow() + 61_000;
+  try {
+    outboundMock.getTypingTicket.mockResolvedValue("T2");
+    expect(await engine.getTypingTicket()).toBe("T2");
+  } finally {
+    Date.now = realNow;
+  }
+  expect(outboundMock.getTypingTicket).toHaveBeenCalledTimes(2);
+});
+
+test("D16 目标：sendTyping 报错含 'ticket' 时清空缓存并重新获取", async () => {
+  await engine.initSingleUser();
+  outboundMock.getTypingTicket.mockResolvedValue("T1");
+
+  await engine.sendTypingStatus(1);
+  expect(outboundMock.sendTyping).toHaveBeenCalledWith(1, "T1");
+
+  // 发送报错含 "ticket" → 清空缓存
+  outboundMock.sendTyping.mockRejectedValueOnce(new Error("invalid typing_ticket"));
+  await engine.sendTypingStatus(1);
+
+  // 缓存已清 → 下一次 getTypingTicket 重新取
+  outboundMock.getTypingTicket.mockResolvedValue("T2");
+  expect(await engine.getTypingTicket()).toBe("T2");
+  expect(outboundMock.getTypingTicket).toHaveBeenCalledTimes(2);
 });
 
 // ---------------------------------------------------------------------------
@@ -319,11 +364,13 @@ test("D7 目标：队列排空时 rejecting turn 应由引擎处理并释放状�
 // ---------------------------------------------------------------------------
 
 test("C9 目标：createWechatEngine 独立实例注入 fake host/config，不污染模块单例", async () => {
-  const isolated = createWechatEngine();
   const isolatedPi = createEnginePi();
-  isolated.configure({
+  const isolated = createWechatEngine({
     host: isolatedPi,
     config: { baseUrl: opts.baseUrl, token: opts.token },
+    inbound: inboundMock as never,
+    outbound: outboundMock as never,
+    media: mediaMock as never,
   });
 
   await isolated.triggerAi(textMessage("isolated hello"), "R-iso", opts);
@@ -344,12 +391,17 @@ test("C9 目标：createWechatEngine 独立实例注入 fake host/config，不�
 // ---------------------------------------------------------------------------
 
 test("B4 目标：needs_relogin 时通知用户执行 /wechat login", async () => {
-  const isolated = createWechatEngine({ config: { baseUrl: opts.baseUrl, token: opts.token } });
+  const isolated = createWechatEngine({
+    config: { baseUrl: opts.baseUrl, token: opts.token },
+    inbound: inboundMock as never,
+    outbound: outboundMock as never,
+    media: mediaMock as never,
+  });
   const notify = mock((_message: string, _type?: string) => {});
   isolated.setNotifier(notify);
 
   // 底层返回会话过期错误
-  apiMock.getUpdates.mockImplementation(async () => {
+  inboundMock.getUpdates.mockImplementation(async () => {
     throw { errcode: -14 };
   });
 
@@ -411,18 +463,18 @@ test("B5 目标：媒体消息立即 ack（不含路径），下载未完成不�
   const gate = new Promise<unknown>((res) => {
     release = res;
   });
-  mediaMock.downloadMediaFromItem.mockImplementation(async () => {
+  mediaMock.download.mockImplementation(async () => {
     await gate;
-    return { decryptedPicPath: "/tmp/media/2601/pic.png" };
+    return { path: "/tmp/media/2601/pic.png" };
   });
 
   await engine.handleMessage(mediaMessage(), opts);
 
   // ack 已发出，且不含保存路径
-  expect(sendMock.sendMessageWeixin).toHaveBeenCalledTimes(1);
-  const ack = sendMock.sendMessageWeixin.mock.calls[0][0] as { text: string };
-  expect(ack.text).toContain("媒体文件已收到");
-  expect(ack.text).not.toContain("/tmp/media");
+  expect(outboundMock.sendText).toHaveBeenCalledTimes(1);
+  const ack = outboundMock.sendText.mock.calls[0][0] as string;
+  expect(ack).toContain("媒体文件已收到");
+  expect(ack).not.toContain("/tmp/media");
 
   // 下载尚未完成：history 未写，且未占用 AI 忙闲标记（不阻塞轮询）
   expect(pi.calls.sendMessage.length).toBe(0);
@@ -447,7 +499,7 @@ test("B5 目标：后台媒体任务串行，第 2 条等第 1 条 resolve 后�
   engine.setHost(pi as never);
 
   const resolvers: Array<(v: unknown) => void> = [];
-  mediaMock.downloadMediaFromItem.mockImplementation(
+  mediaMock.download.mockImplementation(
     () => new Promise((res) => resolvers.push(res)),
   );
 
@@ -455,12 +507,12 @@ test("B5 目标：后台媒体任务串行，第 2 条等第 1 条 resolve 后�
   await engine.handleMessage(mediaMessage(), opts);
 
   // 第 2 条下载尚未启动（串行）
-  expect(mediaMock.downloadMediaFromItem).toHaveBeenCalledTimes(1);
+  expect(mediaMock.download).toHaveBeenCalledTimes(1);
 
-  resolvers[0]({ decryptedPicPath: "/tmp/media/1.png" });
-  await waitFor(() => mediaMock.downloadMediaFromItem.mock.calls.length >= 2);
+  resolvers[0]({ path: "/tmp/media/1.png" });
+  await waitFor(() => mediaMock.download.mock.calls.length >= 2);
 
-  resolvers[1]({ decryptedPicPath: "/tmp/media/2.png" });
+  resolvers[1]({ path: "/tmp/media/2.png" });
   await waitFor(() => pi.calls.sendMessage.length >= 2);
 
   const contents = pi.calls.sendMessage.map(([m]) => (m as { content: string }).content);

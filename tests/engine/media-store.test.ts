@@ -1,25 +1,29 @@
 /**
  * tests/engine/media-store.test.ts
  *
- * media-store.ts 单测（真实 MediaStore + mock media/media-download + 临时目录）：
+ * media-store.ts 单测（真实 MediaStore + 注入的 WechatMedia 端口 fake + 临时目录）：
  * - save 扩展名优先级（originalFilename > contentType > 魔数 > bin）
  * - detectFileType 各签名
  * - createSaveCallback 落盘
- * - downloadAll 收集路径 / 单项失败不影响其它
+ * - downloadAll 经端口下载、收集路径 / 单项失败不影响其它
+ *
+ * 不再 mock.module vendor（media/media-download）；改注入 fake 端口。
  */
 import { test, expect, mock, beforeEach, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { installBaseMocks, repoPath } from "../setup/mocks";
-
-const downloadMock = {
-  downloadMediaFromItem: mock(async (_item: unknown, _opts: unknown) => ({})),
-};
+import { installBaseMocks } from "../setup/mocks";
 
 installBaseMocks();
-mock.module(repoPath("media", "media-download.js"), () => downloadMock);
-mock.module(repoPath("media", "media-download.ts"), () => downloadMock);
+
+// ---- WechatMedia 端口 fake -------------------------------------------------
+
+const mediaMock = {
+  download: mock(
+    async (_item: unknown, _deps: unknown): Promise<{ path: string } | null> => null,
+  ),
+};
 
 const {
   MediaStore,
@@ -35,7 +39,12 @@ const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const rootDir = mkdtempSync(path.join(tmpdir(), "media-store-test-"));
 
 function makeStore(basePath = rootDir): InstanceType<typeof MediaStore> {
-  return new MediaStore({ getBasePath: () => basePath, log: () => {}, errLog: () => {} });
+  return new MediaStore({
+    getBasePath: () => basePath,
+    media: mediaMock as never,
+    log: () => {},
+    errLog: () => {},
+  });
 }
 
 function tempDir(prefix: string): string {
@@ -43,8 +52,8 @@ function tempDir(prefix: string): string {
 }
 
 beforeEach(() => {
-  downloadMock.downloadMediaFromItem.mockReset();
-  downloadMock.downloadMediaFromItem.mockImplementation(async () => ({}));
+  mediaMock.download.mockReset();
+  mediaMock.download.mockImplementation(async () => null);
 });
 
 afterAll(() => {
@@ -153,12 +162,12 @@ test("getISOWeek / getCurrentWeekFolder：周数合理", () => {
 
 test("downloadAll：多 item 收集路径，TEXT 跳过；cdnBaseUrl/label 透传", async () => {
   const store = makeStore();
-  downloadMock.downloadMediaFromItem.mockImplementation(async (item: unknown) => {
+  mediaMock.download.mockImplementation(async (item: unknown) => {
     const type = (item as { type: number }).type;
-    if (type === 2) return { decryptedPicPath: "/tmp/a.png" };
-    if (type === 3) return { decryptedVoicePath: "/tmp/a.wav" };
-    if (type === 5) return { decryptedVideoPath: "/tmp/a.mp4" };
-    return {};
+    if (type === 2) return { path: "/tmp/a.png" };
+    if (type === 3) return { path: "/tmp/a.wav" };
+    if (type === 5) return { path: "/tmp/a.mp4" };
+    return null;
   });
 
   const paths = await store.downloadAll(
@@ -167,9 +176,9 @@ test("downloadAll：多 item 收集路径，TEXT 跳过；cdnBaseUrl/label 透�
   );
 
   expect(paths).toEqual(["/tmp/a.png", "/tmp/a.wav", "/tmp/a.mp4"]);
-  // TEXT(1) 不调用底层
-  expect(downloadMock.downloadMediaFromItem).toHaveBeenCalledTimes(4);
-  const deps = downloadMock.downloadMediaFromItem.mock.calls[0][1] as {
+  // TEXT(1) 不调用端口
+  expect(mediaMock.download).toHaveBeenCalledTimes(4);
+  const deps = mediaMock.download.mock.calls[0][1] as {
     cdnBaseUrl: string;
     label: string;
   };
@@ -180,24 +189,46 @@ test("downloadAll：多 item 收集路径，TEXT 跳过；cdnBaseUrl/label 透�
 test("downloadAll：自定义 labelPrefix", async () => {
   const store = makeStore();
   await store.downloadAll([{ type: 2 }], "https://cdn.example.com", "custom");
-  const deps = downloadMock.downloadMediaFromItem.mock.calls[0][1] as { label: string };
+  const deps = mediaMock.download.mock.calls[0][1] as { label: string };
   expect(deps.label).toBe("custom-2");
+});
+
+test("downloadAll：端口回调 saveMedia 落盘并返回 { path }", async () => {
+  const dir = tempDir("dl-save-");
+  const store = makeStore(dir);
+  mediaMock.download.mockImplementation(async (_item: unknown, deps: unknown) => {
+    const { saveMedia } = deps as {
+      saveMedia: (
+        buffer: Buffer,
+        contentType?: string,
+        originalFilename?: string,
+      ) => Promise<{ path: string }>;
+    };
+    const saved = await saveMedia(PNG_MAGIC, "image/png", "orig.png");
+    return { path: saved.path };
+  });
+
+  const paths = await store.downloadAll([{ type: 2 }], "cdn");
+  expect(paths.length).toBe(1);
+  expect(paths[0].endsWith(".png")).toBe(true);
+  expect(existsSync(paths[0])).toBe(true);
 });
 
 test("downloadAll：单项抛错记录 errLog 且不影响其它 item", async () => {
   const errors: unknown[] = [];
   const store = new MediaStore({
     getBasePath: () => rootDir,
+    media: mediaMock as never,
     log: () => {},
     errLog: (...a: unknown[]) => errors.push(a),
   });
 
-  downloadMock.downloadMediaFromItem.mockImplementation(async (item: unknown) => {
+  mediaMock.download.mockImplementation(async (item: unknown) => {
     const type = (item as { type: number }).type;
     if (type === 4) throw new Error("boom");
-    if (type === 2) return { decryptedPicPath: "/tmp/a.png" };
-    if (type === 3) return { decryptedVoicePath: "/tmp/a.wav" };
-    return {};
+    if (type === 2) return { path: "/tmp/a.png" };
+    if (type === 3) return { path: "/tmp/a.wav" };
+    return null;
   });
 
   const paths = await store.downloadAll([{ type: 2 }, { type: 4 }, { type: 3 }], "cdn");

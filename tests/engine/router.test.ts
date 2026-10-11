@@ -8,8 +8,8 @@ import { test, expect, mock, beforeEach } from "bun:test";
 import { TurnQueue, SerialTaskQueue } from "../../src/engine/queue.js";
 import { MessageRouter } from "../../src/engine/router.js";
 import type { RouterDeps, RouterTurnOptions } from "../../src/engine/router.js";
-import { MessageItemType } from "../../api/types.js";
-import type { WeixinMessage } from "../../api/types.js";
+import { MessageItemType } from "../../src/ports/types.js";
+import type { WeixinMessage } from "../../src/ports/types.js";
 import { createLogger } from "../../src/shared/logger.js";
 import type { PiHost } from "../../src/ports/pi-host.js";
 
