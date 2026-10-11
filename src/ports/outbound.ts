@@ -17,9 +17,10 @@ export interface WechatOutbound {
   /**
    * 发送 typing 指示灯状态。
    * 1 = typing（默认），2 = cancel typing。
+   * ticket 由调用方（TypingController）缓存并提供，端口不做缓存。
    */
-  sendTyping(status: 1 | 2): Promise<void>;
+  sendTyping(status: 1 | 2, ticket: string): Promise<void>;
 
-  /** 获取 typing_ticket；凭证缺失或获取失败时返回 null。 */
+  /** 获取 typing_ticket（直连 getConfig，无缓存）；凭证缺失或获取失败时返回 null。 */
   getTypingTicket(): Promise<string | null>;
 }

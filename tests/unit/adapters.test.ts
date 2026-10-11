@@ -140,17 +140,17 @@ test("inbound：msgs/get_updates_buf 映射为 messages/cursor，并透传凭证
   });
 });
 
-test("inbound：响应字段缺失时回落为空数组 / 空游标", async () => {
+test("inbound：响应字段缺失时 messages 回落为空数组、cursor 沿用入参", async () => {
   apiMock.getUpdates.mockResolvedValueOnce({ ret: 0 });
 
   const inbound = createWechatInbound();
   const result = await inbound.getUpdates({
-    cursor: "",
+    cursor: "cursor-keep",
     baseUrl: "https://api.example.com",
     token: "tok",
   });
 
-  expect(result).toEqual({ messages: [], cursor: "" });
+  expect(result).toEqual({ messages: [], cursor: "cursor-keep" });
 });
 
 // ===========================================================================
@@ -197,46 +197,18 @@ test("outbound：凭证缺失时 sendText / sendFile 抛错（保持现行为）
 });
 
 // ===========================================================================
-// outbound：typing ticket 缓存
+// outbound：typing ticket（端口薄：无缓存）
 // ===========================================================================
 
-test("outbound：getTypingTicket 60s 内命中缓存，不重复 getConfig", async () => {
+test("outbound：getTypingTicket 直连 getConfig，不缓存", async () => {
   const outbound = createWechatOutbound({ getCredentials: () => makeCreds() });
 
   expect(await outbound.getTypingTicket()).toBe("TICKET-1");
   expect(await outbound.getTypingTicket()).toBe("TICKET-1");
-  expect(apiMock.getConfig).toHaveBeenCalledTimes(1);
-});
-
-test("outbound：contextToken 变化后旧 ticket 失效，重新 getConfig", async () => {
-  let creds = makeCreds({ contextToken: "CTX-A" });
-  const outbound = createWechatOutbound({ getCredentials: () => creds });
-
-  expect(await outbound.getTypingTicket()).toBe("TICKET-1");
-
-  apiMock.getConfig.mockResolvedValueOnce({ ret: 0, typing_ticket: "TICKET-2" });
-  creds = makeCreds({ contextToken: "CTX-B" });
-
-  expect(await outbound.getTypingTicket()).toBe("TICKET-2");
   expect(apiMock.getConfig).toHaveBeenCalledTimes(2);
 });
 
-test("outbound：缓存超过 60s TTL 后重新 getConfig", async () => {
-  const outbound = createWechatOutbound({ getCredentials: () => makeCreds() });
-  expect(await outbound.getTypingTicket()).toBe("TICKET-1");
-
-  const realNow = Date.now;
-  Date.now = () => realNow() + 61_000;
-  try {
-    apiMock.getConfig.mockResolvedValueOnce({ ret: 0, typing_ticket: "TICKET-2" });
-    expect(await outbound.getTypingTicket()).toBe("TICKET-2");
-    expect(apiMock.getConfig).toHaveBeenCalledTimes(2);
-  } finally {
-    Date.now = realNow;
-  }
-});
-
-test("outbound：getTypingTicket 在凭证缺失 / getConfig 失败时返回 null", async () => {
+test("outbound：getTypingTicket 在凭证缺失 / getConfig 失败 / ret!=0 时返回 null", async () => {
   const noCreds = createWechatOutbound({ getCredentials: () => null });
   expect(await noCreds.getTypingTicket()).toBeNull();
   expect(apiMock.getConfig).not.toHaveBeenCalled();
@@ -244,40 +216,34 @@ test("outbound：getTypingTicket 在凭证缺失 / getConfig 失败时返回 nul
   apiMock.getConfig.mockRejectedValueOnce(new Error("network down"));
   const withCreds = createWechatOutbound({ getCredentials: () => makeCreds() });
   expect(await withCreds.getTypingTicket()).toBeNull();
+
+  apiMock.getConfig.mockResolvedValueOnce({ ret: -1, errmsg: "no ticket" });
+  expect(await withCreds.getTypingTicket()).toBeNull();
 });
 
-test("outbound：sendTyping 取缓存 ticket 后调用 sendTyping，报错含 ticket 时清空缓存", async () => {
+test("outbound：sendTyping(status, ticket) 直接用传入 ticket 调用底层，不取配置", async () => {
   const outbound = createWechatOutbound({ getCredentials: () => makeCreds() });
 
-  await outbound.sendTyping(1);
+  await outbound.sendTyping(1, "T-EXPLICIT");
   expect(apiMock.sendTyping).toHaveBeenCalledWith({
     baseUrl: "https://ilinkai.example.com",
     token: "bot-token-abc",
-    body: { ilink_user_id: "U1", typing_ticket: "TICKET-1", status: 1 },
+    body: { ilink_user_id: "U1", typing_ticket: "T-EXPLICIT", status: 1 },
   });
-
-  // 第二次发送报错含 "ticket" → 清空缓存
-  apiMock.sendTyping.mockRejectedValueOnce(new Error("invalid typing_ticket"));
-  await outbound.sendTyping(1);
-
-  // 缓存已清 → 下一次 getTypingTicket 重新 getConfig
-  apiMock.getConfig.mockResolvedValueOnce({ ret: 0, typing_ticket: "TICKET-3" });
-  expect(await outbound.getTypingTicket()).toBe("TICKET-3");
-  expect(apiMock.getConfig).toHaveBeenCalledTimes(2);
+  // 端口薄：sendTyping 不触发 getConfig
+  expect(apiMock.getConfig).not.toHaveBeenCalled();
 });
 
-test("outbound：无 ticket 时 sendTyping 记录并返回，不抛错", async () => {
-  apiMock.getConfig.mockResolvedValueOnce({ ret: -1, errmsg: "no ticket" });
+test("outbound：sendTyping 底层抛错时向上冒泡（清缓存由 TypingController 负责）", async () => {
+  apiMock.sendTyping.mockRejectedValueOnce(new Error("invalid typing_ticket"));
   const outbound = createWechatOutbound({ getCredentials: () => makeCreds() });
 
-  await outbound.sendTyping(1);
-  expect(apiMock.sendTyping).not.toHaveBeenCalled();
+  await expect(outbound.sendTyping(1, "T-1")).rejects.toThrow("invalid typing_ticket");
 });
 
-test("outbound：sendTyping 凭证缺失时直接返回", async () => {
+test("outbound：sendTyping 凭证缺失时直接返回，不调用底层", async () => {
   const outbound = createWechatOutbound({ getCredentials: () => null });
-  await outbound.sendTyping(2);
-  expect(apiMock.getConfig).not.toHaveBeenCalled();
+  await outbound.sendTyping(2, "T-1");
   expect(apiMock.sendTyping).not.toHaveBeenCalled();
 });
 
