@@ -18,22 +18,22 @@ import { createWechatOutbound } from "../adapters/outbound.js";
 import { createWechatMedia } from "../adapters/media.js";
 import * as storage from "../storage/state.js";
 import { isDebugEnabled } from "../shared/config.js";
-import { MediaStore } from "./media-store.js";
+import { MediaStore } from "../channel/media-store.js";
 import { sleep, formatTimestamp } from "../shared/time.js";
 import type { WechatApiOpts } from "../shared/types.js";
 import type { PiHost } from "../ports/pi-host.js";
 import { ChannelState } from "../channel/state.js";
 import type { Notifier } from "../channel/state.js";
-import { PollingLoop } from "./polling.js";
-import type { ConnectionState } from "./polling.js";
-import { TurnQueue, SerialTaskQueue } from "./queue.js";
-import { TypingController } from "./typing.js";
-import { MessageSender } from "./sender.js";
-import { MessageRouter } from "./router.js";
+import { PollingLoop } from "../channel/polling.js";
+import type { ConnectionState } from "../channel/polling.js";
+import { TurnQueue, SerialTaskQueue } from "../channel/queue.js";
+import { TypingController } from "../channel/typing.js";
+import { MessageSender } from "../channel/sender.js";
+import { MessageRouter } from "../channel/router.js";
 import { createLogger } from "../shared/logger.js";
 
 // 保持对外导出兼容（ConnectionState 现已迁至 polling.ts）
-export type { ConnectionState } from "./polling.js";
+export type { ConnectionState } from "../channel/polling.js";
 
 // ============== 宿主依赖（依赖注入）==============
 

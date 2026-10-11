@@ -18,7 +18,7 @@ import type { MessageSender } from "./sender.js";
 import type { PluginLogger } from "../shared/logger.js";
 import { sleep } from "../shared/time.js";
 import type { WechatApiOpts } from "../shared/types.js";
-import type { WechatHost } from "./wechat.js";
+import type { PiHost } from "../ports/pi-host.js";
 
 export type RouterTurnOptions = WechatApiOpts;
 
@@ -27,7 +27,7 @@ export interface RouterDeps {
   mediaStore: MediaStore;
   mediaQueue: SerialTaskQueue;
   sender: MessageSender;
-  getHost(): WechatHost | null;
+  getHost(): PiHost | null;
   getOpts(): RouterTurnOptions | null;
   logger: PluginLogger;
 }

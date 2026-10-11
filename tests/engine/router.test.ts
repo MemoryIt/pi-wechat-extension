@@ -5,9 +5,9 @@
  * 不触碰底层边界，用 fake queue/mediaStore/mediaQueue/sender/host/logger。
  */
 import { test, expect, mock, beforeEach } from "bun:test";
-import { TurnQueue, SerialTaskQueue } from "../../src/engine/queue.js";
-import { MessageRouter } from "../../src/engine/router.js";
-import type { RouterDeps, RouterTurnOptions } from "../../src/engine/router.js";
+import { TurnQueue, SerialTaskQueue } from "../../src/channel/queue.js";
+import { MessageRouter } from "../../src/channel/router.js";
+import type { RouterDeps, RouterTurnOptions } from "../../src/channel/router.js";
 import { MessageItemType } from "../../src/ports/types.js";
 import type { WeixinMessage } from "../../src/ports/types.js";
 import { createLogger } from "../../src/shared/logger.js";
