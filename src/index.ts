@@ -2,6 +2,8 @@
  * index.ts - 微信插件入口（组合根，单用户版本）
  *
  * 显式组装依赖并注入 bridge：
+ * - 组合根在此创建 `ChannelState` 与真实 adapters（inbound/outbound/media），
+ *   并把同一 state 交给 Channel 与 outbound 的 `getCredentials`；
  * - `Channel` 负责通道编排；本文件把所有公共成员经注入传给 bridge；
  * - `WechatAuth` 负责扫码登录；
  * - `tool-send-file.ts` 注册发送文件工具；
@@ -15,12 +17,18 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Channel } from "./channel/channel.js";
+import { ChannelState } from "./channel/state.js";
 import type { WechatAuth } from "./ports/auth.js";
 import type { PiHost } from "./ports/pi-host.js";
 import { createWechatAuth } from "./adapters/auth.js";
+import { createWechatInbound } from "./adapters/inbound.js";
+import { createWechatOutbound } from "./adapters/outbound.js";
+import { createWechatMedia } from "./adapters/media.js";
 import { createSendFileTool } from "./bridge/tool-send-file.js";
 import { registerCommands } from "./bridge/commands.js";
 import { registerBridge } from "./bridge/events.js";
+import { isDebugEnabled } from "./shared/config.js";
+import { createLogger } from "./shared/logger.js";
 
 /** 组合根可注入依赖（测试用 fake；生产缺省时创建真实实现）。 */
 export interface ExtensionDeps {
@@ -39,7 +47,20 @@ function piToHost(pi: ExtensionAPI): PiHost {
 
 export function createExtension(deps: ExtensionDeps = {}) {
   return (pi: ExtensionAPI) => {
-    const channel = deps.channel ?? new Channel();
+    const logger = createLogger({ isDebugEnabled: () => isDebugEnabled() });
+    const state = new ChannelState();
+    const ports = {
+      inbound: createWechatInbound(),
+      outbound: createWechatOutbound({
+        getCredentials: () => state.getCredentials(),
+        logger,
+      }),
+      media: createWechatMedia({
+        log: (message) => logger.debug(message),
+        errLog: (message) => logger.error(message),
+      }),
+    };
+    const channel = deps.channel ?? new Channel({ state, ports, logger });
     channel.setHost(piToHost(pi));
 
     const auth = deps.auth ?? createWechatAuth();
