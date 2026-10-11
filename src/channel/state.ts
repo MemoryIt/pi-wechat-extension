@@ -10,6 +10,7 @@
  */
 
 import type { WechatApiOpts } from "../shared/types.js";
+import type { WechatCredentials } from "../ports/types.js";
 import type { PiHost } from "../ports/pi-host.js";
 
 /** 会话过期等场景的用户通知回调（B4）。 */
@@ -47,5 +48,30 @@ export class ChannelState {
     this.isTerminalMessageProcessing = false;
     this.lastRequestIdMs = -1;
     this.requestIdSeq = 0;
+  }
+
+  /**
+   * 组装当前单用户凭证；任一缺失（config / userId / contextToken）返回 null。
+   *
+   * 供组合根在构造 outbound adapter 时注入（`getCredentials` provider），
+   * 与通道自身发送/typing 使用同一份状态。
+   */
+  getCredentials(): WechatCredentials | null {
+    const config = this.config;
+    if (!config || !this.userId || !this.contextToken) {
+      return null;
+    }
+    return {
+      baseUrl: config.baseUrl,
+      token: config.token,
+      userId: this.userId,
+      contextToken: this.contextToken,
+    };
+  }
+
+  /** 当前 API 调用选项（baseUrl + token）；未配置时返回 null。 */
+  getOpts(): WechatApiOpts | null {
+    const cfg = this.config;
+    return cfg ? { baseUrl: cfg.baseUrl, token: cfg.token } : null;
   }
 }

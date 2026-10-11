@@ -96,3 +96,30 @@ test("resetSession 可重复调用且幂等", () => {
   expect(s.lastRequestIdMs).toBe(-1);
   expect(s.requestIdSeq).toBe(0);
 });
+
+test("getCredentials：config/userId/contextToken 齐备时组装凭证，缺一返回 null", () => {
+  const s = new ChannelState();
+  expect(s.getCredentials()).toBeNull();
+
+  s.config = { baseUrl: "https://x", token: "t" };
+  expect(s.getCredentials()).toBeNull();
+
+  s.userId = "U1";
+  expect(s.getCredentials()).toBeNull();
+
+  s.contextToken = "CTX";
+  expect(s.getCredentials()).toEqual({
+    baseUrl: "https://x",
+    token: "t",
+    userId: "U1",
+    contextToken: "CTX",
+  });
+});
+
+test("getOpts：有 config 时返回 baseUrl/token，否则 null", () => {
+  const s = new ChannelState();
+  expect(s.getOpts()).toBeNull();
+
+  s.config = { baseUrl: "https://x", token: "t" };
+  expect(s.getOpts()).toEqual({ baseUrl: "https://x", token: "t" });
+});
