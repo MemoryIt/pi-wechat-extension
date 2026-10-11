@@ -6,20 +6,17 @@
  * - keepalive timer 间隔 8000ms 且 unref
  * - 发送报错信息含 "ticket" 时清空缓存
  *
+ * 微信边界经 `TypingDeps.outbound` 端口访问；缓存/失效策略仍留在本类。
  * 最初自 wechat.ts 提取，行为保持不变。
  */
 
-import { getConfig, sendTyping } from "../../api/api.js";
-
-export interface TypingCredentials {
-  baseUrl: string;
-  token: string;
-  userId: string;
-  contextToken: string;
-}
+import type { WechatOutbound } from "../ports/outbound.js";
 
 export interface TypingDeps {
-  getCredentials(): TypingCredentials | null;
+  /** 出站端口：getTypingTicket / sendTyping（端口本身无缓存）。 */
+  outbound: WechatOutbound;
+  /** 当前 contextToken，用于 ticket 缓存绑定；缺失时视为无凭证。 */
+  getContextToken(): string | null;
   debug(message: string, ...args: unknown[]): void;
   error(message: string, ...args: unknown[]): void;
 }
@@ -41,38 +38,28 @@ export class TypingController {
    * 获取 typing_ticket（单用户）
    */
   async getTicket(): Promise<string | null> {
-    const creds = this.deps.getCredentials();
-    if (!creds) {
+    const contextToken = this.deps.getContextToken();
+    if (!contextToken) {
       return null;
     }
 
     // 检查缓存：必须与当前 contextToken 匹配，token 变化后旧 ticket 失效
     if (
       this.typingTicketCache &&
-      this.typingTicketCache.contextToken === creds.contextToken &&
+      this.typingTicketCache.contextToken === contextToken &&
       Date.now() < this.typingTicketCache.expiresAt
     ) {
       return this.typingTicketCache.ticket;
     }
 
-    try {
-      const configResp = await getConfig({
-        baseUrl: creds.baseUrl,
-        token: creds.token,
-        ilinkUserId: creds.userId,
-        contextToken: creds.contextToken,
-      });
-
-      if (configResp.ret === 0 && configResp.typing_ticket) {
-        this.typingTicketCache = {
-          ticket: configResp.typing_ticket,
-          expiresAt: Date.now() + TYPING_TICKET_CACHE_TTL_MS,
-          contextToken: creds.contextToken,
-        };
-        return configResp.typing_ticket;
-      }
-    } catch (err) {
-      this.deps.error(`[Wechat] getTypingTicket failed:`, err);
+    const ticket = await this.deps.outbound.getTypingTicket();
+    if (ticket) {
+      this.typingTicketCache = {
+        ticket,
+        expiresAt: Date.now() + TYPING_TICKET_CACHE_TTL_MS,
+        contextToken,
+      };
+      return ticket;
     }
 
     return null;
@@ -82,8 +69,8 @@ export class TypingController {
    * 发送 typing 状态（单用户）
    */
   async sendStatus(status: 1 | 2): Promise<void> {
-    const creds = this.deps.getCredentials();
-    if (!creds) {
+    // 凭证（contextToken）缺失时静默返回，不触发底层请求
+    if (!this.deps.getContextToken()) {
       return;
     }
 
@@ -94,15 +81,7 @@ export class TypingController {
     }
 
     try {
-      await sendTyping({
-        baseUrl: creds.baseUrl,
-        token: creds.token,
-        body: {
-          ilink_user_id: creds.userId,
-          typing_ticket: ticket,
-          status,
-        },
-      });
+      await this.deps.outbound.sendTyping(status, ticket);
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       this.deps.error(`[Wechat] sendTypingStatus failed:`, errMsg);

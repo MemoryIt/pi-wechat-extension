@@ -8,8 +8,14 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { WeixinMessage } from "../../api/types";
-import { MessageItemType } from "../../api/types.js";
+import type { WeixinMessage, WechatCredentials } from "../ports/types.js";
+import { MessageItemType } from "../ports/types.js";
+import type { WechatInbound } from "../ports/inbound.js";
+import type { WechatOutbound } from "../ports/outbound.js";
+import type { WechatMedia } from "../ports/media.js";
+import { createWechatInbound } from "../adapters/inbound.js";
+import { createWechatOutbound } from "../adapters/outbound.js";
+import { createWechatMedia } from "../adapters/media.js";
 import * as storage from "../storage/state.js";
 import { isDebugEnabled } from "../shared/config.js";
 import { MediaStore } from "./media-store.js";
@@ -19,7 +25,6 @@ import { PollingLoop } from "./polling.js";
 import type { ConnectionState } from "./polling.js";
 import { TurnQueue, SerialTaskQueue } from "./queue.js";
 import { TypingController } from "./typing.js";
-import type { TypingCredentials } from "./typing.js";
 import { MessageSender } from "./sender.js";
 import { MessageRouter } from "./router.js";
 import { createLogger } from "../shared/logger.js";
@@ -43,6 +48,21 @@ export interface WechatHost {
 }
 
 export type WechatConfig = WechatApiOpts;
+
+/**
+ * 可注入的微信边界端口（测试用 fake；生产缺省时由本文件构造 adapters）。
+ */
+export interface WechatEnginePorts {
+  inbound?: WechatInbound;
+  outbound?: WechatOutbound;
+  media?: WechatMedia;
+}
+
+/** createWechatEngine 可选的初始依赖（host / config / ports）。 */
+export interface WechatEngineDeps extends WechatEnginePorts {
+  host?: WechatHost;
+  config?: WechatConfig;
+}
 
 /**
  * 门面：把完整 ExtensionAPI 适配为窄接口 WechatHost 后注入单例 engine。
@@ -86,25 +106,14 @@ export class WechatEngine {
   private queue = new TurnQueue<{ msg: WeixinMessage; requestId: string }>();
 
   // === 媒体存储 / 后台串行队列（B5：媒体下载不阻塞轮询）===
-  private mediaStore = new MediaStore({
-    log: (...a: unknown[]) => this.logger.debug(String(a[0] ?? ""), ...a.slice(1)),
-    errLog: (...a: unknown[]) => this.logger.error(String(a[0] ?? ""), ...a.slice(1)),
-  });
+  private readonly mediaStore: MediaStore;
   private mediaQueue = new SerialTaskQueue((err) =>
     this.logger.error("Media background task failed", err),
   );
 
   // === Typing / 发送 协作类（单用户）===
-  private typing = new TypingController({
-    getCredentials: () => this.getCredentials(),
-    debug: this.logger.debug.bind(this.logger),
-    error: this.logger.error.bind(this.logger),
-  });
-  private sender = new MessageSender({
-    getCredentials: () => this.getCredentials(),
-    debug: this.logger.debug.bind(this.logger),
-    error: this.logger.error.bind(this.logger),
-  });
+  private readonly typing: TypingController;
+  private readonly sender: MessageSender;
 
   // === 消息路由（turn 执行 + 队列排空）===
   private router: MessageRouter;
@@ -116,7 +125,39 @@ export class WechatEngine {
   // === 通知回调（B4：会话过期时提示用户）===
   private notifier: ((message: string, type?: "info" | "warning" | "error") => void) | null = null;
 
-  constructor() {
+  constructor(ports: WechatEnginePorts = {}) {
+    const outbound =
+      ports.outbound ??
+      createWechatOutbound({
+        getCredentials: () => this.getCredentials(),
+        logger: this.logger,
+      });
+    const inbound = ports.inbound ?? createWechatInbound();
+    const media =
+      ports.media ??
+      createWechatMedia({
+        log: (message) => this.logger.debug(message),
+        errLog: (message) => this.logger.error(message),
+      });
+
+    this.mediaStore = new MediaStore({
+      media,
+      log: (...a: unknown[]) => this.logger.debug(String(a[0] ?? ""), ...a.slice(1)),
+      errLog: (...a: unknown[]) => this.logger.error(String(a[0] ?? ""), ...a.slice(1)),
+    });
+
+    this.typing = new TypingController({
+      outbound,
+      getContextToken: () => this.singleContextToken,
+      debug: this.logger.debug.bind(this.logger),
+      error: this.logger.error.bind(this.logger),
+    });
+    this.sender = new MessageSender({
+      outbound,
+      debug: this.logger.debug.bind(this.logger),
+      error: this.logger.error.bind(this.logger),
+    });
+
     this.router = new MessageRouter({
       queue: this.queue,
       mediaStore: this.mediaStore,
@@ -132,6 +173,7 @@ export class WechatEngine {
       getAccountId: () => this.accountId,
       loadCursor: (accountId) => storage.loadSyncCursor(accountId),
       saveCursor: (accountId, cursor) => storage.saveSyncCursor(accountId, cursor),
+      inbound,
       onMessage: (msg, opts) => this.handleMessage(msg, opts),
       onNeedsRelogin: () => {
         this.logger.debug("Session expired, needs relogin");
@@ -327,7 +369,7 @@ export class WechatEngine {
   /**
    * 组装当前单用户凭证；任一缺失返回 null。
    */
-  private getCredentials(): TypingCredentials | null {
+  private getCredentials(): WechatCredentials | null {
     const config = this.config;
     if (!config || !this.singleUserId || !this.singleContextToken) {
       return null;
@@ -450,8 +492,12 @@ export class WechatEngine {
 }
 
 // === 工厂函数（供测试隔离：创建不共享模块单例状态的独立实例）===
-export function createWechatEngine(initial?: { host?: WechatHost; config?: WechatConfig }): WechatEngine {
-  const instance = new WechatEngine();
+export function createWechatEngine(initial?: WechatEngineDeps): WechatEngine {
+  const instance = new WechatEngine({
+    inbound: initial?.inbound,
+    outbound: initial?.outbound,
+    media: initial?.media,
+  });
   if (initial) instance.configure(initial);
   return instance;
 }

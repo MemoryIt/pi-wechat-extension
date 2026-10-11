@@ -10,8 +10,8 @@
  * 不直接持有 WechatEngine，便于单测。最初自 wechat.ts 抽出，行为保持一致。
  */
 
-import { MessageItemType } from "../../api/types.js";
-import type { WeixinMessage } from "../../api/types.js";
+import { MessageItemType } from "../ports/types.js";
+import type { WeixinMessage } from "../ports/types.js";
 import type { TurnQueue, SerialTaskQueue } from "./queue.js";
 import type { MediaStore } from "./media-store.js";
 import type { MessageSender } from "./sender.js";

@@ -3,8 +3,8 @@
  *
  * 负责媒体文件落盘与识别：
  * - ISO 周目录 / 文件类型魔数识别 / MIME 映射
- * - MediaStore：save（单文件落盘）、createSaveCallback（供 downloadMediaFromItem 使用）、
- *   downloadAll（批量下载并收集解密后的本地路径）
+ * - MediaStore：save（单文件落盘）、createSaveCallback（端口 3 参 SaveMediaFn）、
+ *   downloadAll（经 WechatMedia 端口批量下载并收集本地路径）
  *
  * 最初自 wechat.ts 抽出。
  */
@@ -13,9 +13,9 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { getMediaStoragePath } from "../shared/config.js";
-import { downloadMediaFromItem } from "../../media/media-download.js";
-import { MessageItemType } from "../../api/types.js";
-import type { MessageItem } from "../../api/types.js";
+import { MessageItemType } from "../ports/types.js";
+import type { MessageItem } from "../ports/types.js";
+import type { SaveMediaFn, WechatMedia } from "../ports/media.js";
 import { formatTimestamp } from "../shared/time.js";
 
 // ============== 媒体存储配置 ==============
@@ -104,19 +104,17 @@ export function detectFileType(buffer: Buffer): string | null {
   return null;
 }
 
-/**
- * SaveMediaFn 回调实现（用于 downloadMediaFromItem）
- */
-export type SaveMediaFn = (
-  buffer: Buffer,
-  contentType?: string,
-  subdir?: string,
-  maxBytes?: number,
-  originalFilename?: string,
-) => Promise<{ path: string }>;
+/** 未注入 media 端口时的降级实现：不下载、返回 null。 */
+const UNAVAILABLE_MEDIA: WechatMedia = {
+  async download() {
+    return null;
+  },
+};
 
 export interface MediaStoreOptions {
   getBasePath?: () => string;
+  /** 媒体下载端口；由组合根注入，单测可注入 fake。 */
+  media?: WechatMedia;
   log?: (...a: unknown[]) => void;
   errLog?: (...a: unknown[]) => void;
 }
@@ -126,11 +124,13 @@ export interface MediaStoreOptions {
  */
 export class MediaStore {
   private readonly getBasePath: () => string;
+  private readonly media: WechatMedia;
   private readonly log: (...a: unknown[]) => void;
   private readonly errLog: (...a: unknown[]) => void;
 
   constructor(opts: MediaStoreOptions = {}) {
     this.getBasePath = opts.getBasePath ?? getMediaStoragePath;
+    this.media = opts.media ?? UNAVAILABLE_MEDIA;
     this.log = opts.log ?? console.log;
     this.errLog = opts.errLog ?? console.error;
   }
@@ -166,17 +166,17 @@ export class MediaStore {
   }
 
   /**
-   * SaveMediaFn 回调实现（用于 downloadMediaFromItem）
+   * 落盘回调（端口 3 参 SaveMediaFn）：目录/命名/类型判定仍由本类决定。
    */
   createSaveCallback(): SaveMediaFn {
-    return async (buffer, contentType, _subdir, _maxBytes, originalFilename) => {
+    return async (buffer, contentType, originalFilename) => {
       const path = this.save(buffer, contentType, originalFilename);
       return { path };
     };
   }
 
   /**
-   * 遍历消息中的非文本 item，逐个下载解密并落盘，收集本地路径。
+   * 遍历消息中的非文本 item，逐个经 media 端口下载并落盘，收集本地路径。
    * 单项失败记录 errLog 后继续，不影响其它 item。
    */
   async downloadAll(
@@ -191,23 +191,15 @@ export class MediaStore {
       if (item.type === MessageItemType.TEXT) continue;
 
       try {
-        const result = await downloadMediaFromItem(item, {
+        const result = await this.media.download(item, {
           cdnBaseUrl,
           saveMedia,
-          log: this.log,
-          errLog: this.errLog,
           label: `${labelPrefix}-${item.type}`,
         });
 
-        const savedPath =
-          result.decryptedPicPath ??
-          result.decryptedVoicePath ??
-          result.decryptedFilePath ??
-          result.decryptedVideoPath;
-
-        if (savedPath) {
-          paths.push(savedPath);
-          this.log(`Media saved: ${savedPath}`);
+        if (result?.path) {
+          paths.push(result.path);
+          this.log(`Media saved: ${result.path}`);
         }
       } catch (err) {
         this.errLog(`Media download failed for type ${item.type}:`, err);

@@ -7,8 +7,8 @@
  * （最初自 wechat.ts 提取，行为保持不变。）
  */
 
-import type { WeixinMessage } from "../../api/types";
-import { getUpdates } from "../../api/api.js";
+import type { WeixinMessage } from "../ports/types.js";
+import type { WechatInbound } from "../ports/inbound.js";
 import type { WechatApiOpts } from "../shared/types.js";
 
 export type ConnectionState =
@@ -34,6 +34,8 @@ export interface PollingLoopDeps {
   getAccountId(): string | null;
   loadCursor(accountId: string): Promise<string | null>;
   saveCursor(accountId: string, cursor: string): Promise<void>;
+  /** 入站端口：长轮询拉取更新 */
+  inbound: WechatInbound;
   /** -> engine.handleMessage */
   onMessage(msg: WeixinMessage, opts: StartPollingOpts): Promise<void>;
   /** B4：会话过期（needs_relogin）时通知用户 */
@@ -143,8 +145,8 @@ export class PollingLoop {
         const abortWaiter = this.createAbortWaiter(abortSignal);
         try {
           const updates = await Promise.race([
-            getUpdates({
-              get_updates_buf: this.state.syncCursor,
+            this.deps.inbound.getUpdates({
+              cursor: this.state.syncCursor,
               baseUrl: opts.baseUrl,
               token: opts.token,
               timeoutMs: DEFAULT_LONG_POLL_TIMEOUT_MS,
@@ -154,13 +156,13 @@ export class PollingLoop {
 
           if (generation !== this.pollingGeneration) break;
 
-          for (const msg of updates.msgs ?? []) {
+          for (const msg of updates.messages) {
             if (abortSignal.aborted || generation !== this.pollingGeneration) break;
             await this.deps.onMessage(msg, opts);
           }
 
-          // 更新并持久化 cursor
-          this.state.syncCursor = updates.get_updates_buf ?? this.state.syncCursor;
+          // 更新并持久化 cursor（缺字段回落由 inbound adapter 完成）
+          this.state.syncCursor = updates.cursor;
           const accountId = this.deps.getAccountId();
           if (accountId) {
             await this.deps.saveCursor(accountId, this.state.syncCursor);
