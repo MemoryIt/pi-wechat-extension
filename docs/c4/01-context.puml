@@ -6,6 +6,7 @@
 ' 事实来源：docs/ARCHITECTURE.md
 ' 说明：本图为 Context 层，仅描述系统边界与外部角色/外部系统，
 '       不描述插件内部结构（见 03-components.puml）。
+' 角色模型：只有「用户」一个 Person；微信是外部平台（拆分为 App 与 iLink 后端）。
 ' ============================================================================
 
 !include <C4/C4_Context>
@@ -14,28 +15,42 @@
 
 title System Context — pi-wechat-extension
 
-' --- 角色（Person）--------------------------------------------------------
-Person(wechatUser, "微信用户", "单用户：通过微信 App 与 AI 对话")
-Person(operator, "开发者 / 操作者", "在 pi 终端扫码登录、执行 /wechat 命令、查看日志")
+' --- 角色（Person，唯一）-------------------------------------------------
+Person(user, "用户", "唯一用户；首次使用需先在 pi 终端绑定微信账号，之后通过微信与 AI 对话")
 
 ' --- 系统（System of interest）-------------------------------------------
 System(plugin, "pi-wechat-extension", "微信 <-> pi 的双向消息通道；作为进程内扩展运行于 pi 运行时")
 
 ' --- 外部系统（System_Ext）-----------------------------------------------
 System_Ext(piRuntime, "pi coding agent 运行时", "宿主进程：提供 ExtensionAPI、会话与 agent 生命周期、LLM 访问")
-System_Ext(wechatBackend, "微信 iLink 后端", "长轮询收消息、发送文本/媒体、上传下载、typing、登录鉴权")
+System_Ext(wechatApp, "微信 App", "用户使用的微信客户端：收发消息、扫码确认登录")
+System_Ext(ilinkBackend, "微信 iLink 后端", "插件对接的机器人后端 API：长轮询、发送、上传下载、typing、登录鉴权")
 System_Ext(fileSystem, "本地文件系统", "~/.pi/agent/wechat/ 凭证与媒体目录")
 System_Ext(llmProvider, "LLM 提供商", "经 pi 运行时间接访问的大模型服务")
 
 ' --- 关系（Rel）----------------------------------------------------------
-Rel(wechatUser, plugin, "发送 / 接收微信消息", "微信 App")
-Rel(operator, plugin, "登录 / 查看状态 / 启停轮询", "/wechat 命令")
-Rel(plugin, operator, "展示二维码与连接状态", "终端 / UI 通知")
+' 终端路径：绑定账号与管理
+Rel(user, plugin, "首次使用：在 pi 终端执行 /wechat login 绑定微信账号；查看状态 / 启停轮询", "终端命令")
+Rel(plugin, user, "展示登录二维码与连接状态", "终端 / UI 通知")
 
+' 微信路径：聊天（消息经微信平台内部路由）
+Rel(user, wechatApp, "收发微信消息、扫码确认登录", "微信 App")
+Rel(wechatApp, ilinkBackend, "发送消息 / 扫码确认", "平台内部")
+Rel(ilinkBackend, wechatApp, "投递消息 / 登录结果", "平台内部")
+
+Rel(plugin, ilinkBackend, "请求登录二维码 / 长轮询 / 发送回复与媒体 / typing", "HTTPS")
+Rel(ilinkBackend, plugin, "返回新消息 / 登录结果", "HTTPS")
+
+' 宿主与基础设施
 Rel(plugin, piRuntime, "注册工具 / 命令 / 事件；注入用户消息", "ExtensionAPI（in-process）")
-Rel(plugin, wechatBackend, "长轮询 / 发送 / 上传下载 / typing", "HTTPS")
 Rel(plugin, fileSystem, "读写凭证、cursor、context token 与媒体文件", "fs")
 Rel(piRuntime, llmProvider, "生成回复", "HTTPS（经 pi，非插件直连）")
+
+' --- 前置说明 ------------------------------------------------------------
+note as Precondition
+  **前置条件** — 首次使用需先在 pi 终端执行 `/wechat login` 扫码绑定微信账号；
+  绑定成功后插件才会自动连接并收发微信消息（绑定前微信侧无法触达插件）。
+end note
 
 LAYOUT_WITH_LEGEND()
 @enduml
