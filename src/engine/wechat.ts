@@ -3,13 +3,12 @@
  *
  * 通道编排逻辑已下沉到 `../channel/channel.ts` 的 `Channel`；本类仅持有
  * 一个 `Channel` 实例并把所有公共成员**逐一委托**给它，保持对外公共 API
- * 逐成员不变（bridge 仍走旧入口）。
+ * 逐成员不变。
  *
- * 对外提供 WechatHost 依赖注入、setPi / setConfig、单例 `engine`
- * 与 createWechatEngine() 工厂。
+ * 对外提供 WechatHost 依赖注入、WechatConfig 与 createWechatEngine() 工厂；
+ * 不再导出模块级 `engine` 单例 / `setPi` / `setConfig`（组合根见 `src/index.ts`）。
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { WeixinMessage } from "../ports/types.js";
 import type { WechatInbound } from "../ports/inbound.js";
 import type { WechatOutbound } from "../ports/outbound.js";
@@ -51,22 +50,6 @@ export interface WechatEngineDeps extends WechatEnginePorts {
   host?: WechatHost;
   config?: WechatConfig;
   ports?: WechatEnginePorts;
-}
-
-/**
- * 门面：把完整 ExtensionAPI 适配为窄接口 WechatHost 后注入单例 engine。
- * index.ts 依赖此函数，保持签名不变。
- */
-export function setPi(piInstance: ExtensionAPI): void {
-  engine.setHost({
-    appendEntry: (t, d) => piInstance.appendEntry(t, d),
-    sendUserMessage: (c, o) => piInstance.sendUserMessage(c, o),
-    sendMessage: (m, o) => piInstance.sendMessage(m, o),
-  });
-}
-
-export function setConfig(config: WechatConfig): void {
-  engine.setConfig(config);
 }
 
 // ============== WechatEngine（单用户版本，薄门面）==============
@@ -209,6 +192,3 @@ export function createWechatEngine(initial?: WechatEngineDeps): WechatEngine {
   if (initial) instance.configure(initial);
   return instance;
 }
-
-// === 导出单例 ===
-export const engine = new WechatEngine();

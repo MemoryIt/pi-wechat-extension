@@ -6,11 +6,9 @@
  */
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { createWechatAuth } from "../adapters/auth.js";
+import type { Channel } from "../channel/channel.js";
 import type { WechatAuth } from "../ports/auth.js";
 import { saveToken, upsertAccount } from "../storage/state.js";
-import { setConfig } from "../engine/wechat.js";
-import type { WechatEngine } from "../engine/wechat.js";
 import { redactToken } from "../shared/redact.js";
 import { isDebugEnabled } from "../shared/config.js";
 import { createLogger } from "../shared/logger.js";
@@ -19,8 +17,8 @@ const logger = createLogger({ isDebugEnabled: () => isDebugEnabled() });
 
 export async function performWechatLogin(
   ctx: ExtensionCommandContext,
-  engine: WechatEngine,
-  auth: WechatAuth = createWechatAuth(),
+  channel: Channel,
+  auth: WechatAuth,
 ): Promise<void> {
   try {
     const startResult = await auth.startQr({
@@ -75,10 +73,10 @@ export async function performWechatLogin(
 
       ctx.ui.notify("✅ 与微信连接成功！", "info");
 
-      setConfig({ baseUrl: loginResult.baseUrl!, token: botToken });
+      channel.setConfig({ baseUrl: loginResult.baseUrl!, token: botToken });
 
       // 登录成功后自动启动轮询
-      engine.startPolling({ baseUrl: loginResult.baseUrl!, token: botToken }).catch((err) => {
+      channel.startPolling({ baseUrl: loginResult.baseUrl!, token: botToken }).catch((err) => {
         ctx.ui.notify(`启动轮询失败: ${err.message}`, "error");
       });
 

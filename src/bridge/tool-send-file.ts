@@ -2,20 +2,20 @@
  * tool-send-file.ts - send_wechat_file 工具
  *
  * 从 index.ts 拆出：允许 AI 向当前微信用户发送本地文件。
- * 通过 `createSendFileTool(engine)` 注入 engine，保持 engine 单例来自 wechat.js。
+ * 通过 `createSendFileTool(channel)` 注入 `Channel`。
  */
 
 import { Type, type Static } from "@sinclair/typebox";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { WechatEngine } from "../engine/wechat.js";
+import type { Channel } from "../channel/channel.js";
 import { isDebugEnabled } from "../shared/config.js";
 import { createLogger } from "../shared/logger.js";
 
 const logger = createLogger({ isDebugEnabled: () => isDebugEnabled() });
 
-export function createSendFileTool(engine: WechatEngine): ToolDefinition {
+export function createSendFileTool(channel: Channel): ToolDefinition {
   const sendFileParams = Type.Object({
     localPath: Type.String({
       description: "必须填写：Pi 本地文件的**完整绝对路径**（例如 /Users/mou/code/pi-dev/Agent.pptx）",
@@ -61,13 +61,13 @@ export function createSendFileTool(engine: WechatEngine): ToolDefinition {
       logger.debug(`准备发送文件: ${displayName} (${trimmedPath})`);
 
       try {
-        await engine.sendFileToUser(trimmedPath);
+        await channel.sendFile(trimmedPath);
         const successMsg = `文件 "${displayName}" 已成功发送至微信`;
         logger.debug(successMsg);
         return { content: [{ type: "text", text: successMsg }], details: {} };
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        logger.debug(`sendFileToUser 执行失败:`, errMsg);
+        logger.debug(`sendFile 执行失败:`, errMsg);
         // SDK 约定：工具失败需通过 throw 上报（结果会带上 isError=true）。
         throw new Error(`发送文件失败: ${errMsg}`);
       }

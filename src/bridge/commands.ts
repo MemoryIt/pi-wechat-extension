@@ -6,11 +6,11 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getDefaultAccountToken, deleteAccountData, removeAccount } from "../storage/state.js";
-import { setConfig } from "../engine/wechat.js";
-import type { WechatEngine } from "../engine/wechat.js";
+import type { Channel } from "../channel/channel.js";
+import type { WechatAuth } from "../ports/auth.js";
 import { performWechatLogin } from "./login.js";
 
-export function registerCommands(pi: ExtensionAPI, engine: WechatEngine): void {
+export function registerCommands(pi: ExtensionAPI, channel: Channel, auth: WechatAuth): void {
   pi.registerCommand("wechat", {
     description: "WeChat integration",
     getArgumentCompletions: (prefix) => {
@@ -22,11 +22,11 @@ export function registerCommands(pi: ExtensionAPI, engine: WechatEngine): void {
       const subcommand = args.trim().toLowerCase();
 
       if (subcommand === "login") {
-        await performWechatLogin(ctx, engine);
+        await performWechatLogin(ctx, channel, auth);
       } else if (subcommand === "status") {
         const token = await getDefaultAccountToken();
         if (token) {
-          ctx.ui.notify(`WeChat: Logged in\nUser ID: ${token.userId}\nConnection: ${engine.connectionState}`, "info");
+          ctx.ui.notify(`WeChat: Logged in\nUser ID: ${token.userId}\nConnection: ${channel.connectionState}`, "info");
         } else {
           ctx.ui.notify("WeChat: Not logged in", "info");
         }
@@ -36,17 +36,17 @@ export function registerCommands(pi: ExtensionAPI, engine: WechatEngine): void {
           ctx.ui.notify("WeChat: Not logged in. Use /wechat login first.", "error");
           return;
         }
-        // 与 session_start 保持一致：启动轮询前必须先把凭证同步给 engine。
-        setConfig({ baseUrl: token.baseUrl, token: token.botToken });
+        // 与 session_start 保持一致：启动轮询前必须先把凭证同步给 channel。
+        channel.setConfig({ baseUrl: token.baseUrl, token: token.botToken });
         ctx.ui.notify("WeChat: Starting polling...", "info");
-        engine.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
+        channel.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
           ctx.ui.notify(`Polling error: ${err.message}`, "error");
         });
       } else if (subcommand === "stop") {
-        engine.stopPolling();
+        channel.stopPolling();
         ctx.ui.notify("WeChat: Stopped polling", "info");
       } else if (subcommand === "logout") {
-        engine.reset();
+        channel.reset();
         const token = await getDefaultAccountToken();
         if (token) {
           await deleteAccountData(token.accountId);

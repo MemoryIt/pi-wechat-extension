@@ -13,8 +13,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getDefaultAccountToken } from "../storage/state.js";
-import { setConfig } from "../engine/wechat.js";
-import type { WechatEngine } from "../engine/wechat.js";
+import type { Channel } from "../channel/channel.js";
 import { isDebugEnabled } from "../shared/config.js";
 import { createLogger } from "../shared/logger.js";
 import {
@@ -29,7 +28,7 @@ import { buildMetaInfo, refreshCachedGitBranch } from "./meta.js";
 
 const logger = createLogger({ isDebugEnabled: () => isDebugEnabled() });
 
-export function registerBridge(pi: ExtensionAPI, engine: WechatEngine): void {
+export function registerBridge(pi: ExtensionAPI, channel: Channel): void {
   // ============== session_start ==============
 
   pi.on("session_start", async (_event, ctx) => {
@@ -37,15 +36,15 @@ export function registerBridge(pi: ExtensionAPI, engine: WechatEngine): void {
     await refreshCachedGitBranch(pi);
 
     // B4：会话过期（needs_relogin）时通过 UI 通知用户
-    engine.setNotifier((msg, type) => ctx.ui.notify(msg, type ?? "info"));
+    channel.setNotifier((msg, type) => ctx.ui.notify(msg, type ?? "info"));
 
     const token = await getDefaultAccountToken();
     if (token) {
-      setConfig({ baseUrl: token.baseUrl, token: token.botToken });
+      channel.setConfig({ baseUrl: token.baseUrl, token: token.botToken });
       logger.debug(`session_start: loaded token for userId=${token.userId}`);
 
       // 启动轮询
-      engine.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
+      channel.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
         logger.error("Polling error:", err.message);
       });
     } else {
@@ -56,8 +55,8 @@ export function registerBridge(pi: ExtensionAPI, engine: WechatEngine): void {
   // ============== session_shutdown ==============
 
   pi.on("session_shutdown", async () => {
-    engine.stopPolling();
-    engine.reset();
+    channel.stopPolling();
+    channel.reset();
   });
 
   // ============== input ==============
@@ -85,7 +84,7 @@ export function registerBridge(pi: ExtensionAPI, engine: WechatEngine): void {
       logger.debug(`before_agent_start: WeChat turn detected, requestId=${turn.requestId ?? "(unknown)"}`);
     } else {
       // 终端消息正在处理，微信消息需要排队
-      engine.setTerminalProcessing(true);
+      channel.setTerminalProcessing(true);
       logger.debug(`before_agent_start: Terminal turn, WeChat messages will be queued`);
     }
   });
@@ -97,14 +96,14 @@ export function registerBridge(pi: ExtensionAPI, engine: WechatEngine): void {
     if (!isAssistantMessage(event)) return;
     if (!resolveTurnFromBranch(ctx).fromWechat) return;
     logger.debug(`message_start: starting typing keepalive`);
-    await engine.startTypingKeepalive();
+    await channel.startTyping();
   });
 
   pi.on("message_end", async (event, ctx) => {
     if (!isAssistantMessage(event)) return;
     if (!resolveTurnFromBranch(ctx).fromWechat) return;
     logger.debug(`message_end: stopping typing keepalive`);
-    await engine.stopTypingKeepalive();
+    await channel.stopTyping();
   });
 
   // ============== agent_end ==============
@@ -113,9 +112,9 @@ export function registerBridge(pi: ExtensionAPI, engine: WechatEngine): void {
   pi.on("agent_end", async (_event, ctx) => {
     const turn = resolveTurnFromBranch(ctx);
     if (turn.fromWechat) {
-      await engine.stopTypingKeepalive();
+      await channel.stopTyping();
     } else {
-      engine.setTerminalProcessing(false);
+      channel.setTerminalProcessing(false);
     }
   });
 
@@ -127,8 +126,8 @@ export function registerBridge(pi: ExtensionAPI, engine: WechatEngine): void {
 
     if (!turn.fromWechat) {
       // 终端 turn：释放标志并排空队列（对缺失 agent_end 的情况也是兜底）。
-      engine.setTerminalProcessing(false);
-      engine.onAiDone();
+      channel.setTerminalProcessing(false);
+      channel.onAiDone();
       return;
     }
 
@@ -145,7 +144,7 @@ export function registerBridge(pi: ExtensionAPI, engine: WechatEngine): void {
       }
 
       // 防重
-      if (engine.isRequestProcessed(turn.requestId)) {
+      if (channel.isRequestProcessed(turn.requestId)) {
         logger.debug(`Request ${turn.requestId} already processed, skipping`);
         return;
       }
@@ -158,7 +157,7 @@ export function registerBridge(pi: ExtensionAPI, engine: WechatEngine): void {
       }
 
       // typing 兜底停止
-      await engine.stopTypingKeepalive();
+      await channel.stopTyping();
 
       // 追加模型元信息
       const metaInfo = buildMetaInfo(ctx);
@@ -167,9 +166,9 @@ export function registerBridge(pi: ExtensionAPI, engine: WechatEngine): void {
       logger.debug(`Sending reply: ${replyText.slice(0, 50)}...`);
 
       try {
-        await engine.sendMessageWithRetry(finalReply);
+        await channel.sendReply(finalReply);
         // 只有发送成功后才标记已处理，失败时仍可重试（D2）。
-        engine.markRequestProcessed(turn.requestId);
+        channel.markRequestProcessed(turn.requestId);
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
         logger.error(`Failed to send reply:`, errMsg);
@@ -177,7 +176,7 @@ export function registerBridge(pi: ExtensionAPI, engine: WechatEngine): void {
       }
     } finally {
       // 所有早退 / 异常路径都必须释放队列，否则后续微信消息会永久停滞（D1）。
-      engine.onAiDone();
+      channel.onAiDone();
     }
   }
 }

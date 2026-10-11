@@ -14,13 +14,11 @@
 import { test, expect, mock, beforeEach } from "bun:test";
 import { resetAgentDir } from "../setup/mocks";
 import {
-  createBridgeEngine,
-  resetBridgeEngine,
-  installBridgeMocks,
+  createBridgeChannel,
+  resetBridgeChannel,
   authMock,
   resetAuthMock,
-  setConfigMock,
-  loadIndex,
+  loadExtension,
   createFakePi,
 } from "../setup/bridge-harness";
 import {
@@ -32,10 +30,8 @@ import {
   sleep,
 } from "../setup/fake-pi";
 
-const engine = createBridgeEngine();
-installBridgeMocks(engine);
-
-const register = await loadIndex();
+const channel = createBridgeChannel();
+const register = await loadExtension({ channel, auth: authMock });
 const storage = await import("../../src/storage/state.js");
 
 const { api, handlers, commands } = createFakePi();
@@ -48,9 +44,8 @@ const wechatCommand = commands.get("wechat")!;
 
 beforeEach(() => {
   resetAgentDir();
-  resetBridgeEngine(engine);
+  resetBridgeChannel(channel);
   resetAuthMock();
-  setConfigMock.mockClear();
 });
 
 // ---------------------------------------------------------------------------
@@ -58,8 +53,9 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 test("D11 目标：日志中不应出现明文 botToken", async () => {
-  authMock.waitForWeixinLogin.mockResolvedValue({
+  authMock.waitForLogin.mockResolvedValue({
     connected: true,
+    message: "ok",
     accountId: "acc1",
     botToken: "SECRET-BOT-TOKEN",
     userId: "U1",
@@ -106,7 +102,7 @@ test("D18 目标：非 assistant 消息结束不应停止 typing keepalive", asy
   await messageStart({ message: { role: "toolResult", content: "ok" } }, ctx);
   await messageEnd({ message: { role: "toolResult", content: "ok" } }, ctx);
 
-  expect(engine.stopTypingKeepalive).not.toHaveBeenCalled();
+  expect(channel.stopTyping).not.toHaveBeenCalled();
 });
 
 // ---------------------------------------------------------------------------
@@ -156,14 +152,14 @@ async function seedToken() {
   await storage.upsertAccount({ accountId: "acc1", displayName: "微信账号", loginAt: Date.now() });
 }
 
-test("D20 目标：/wechat start 应同时设置 engine 配置", async () => {
+test("D20 目标：/wechat start 应同时设置 channel 配置", async () => {
   await seedToken();
   const ctx = createFakeCtx();
 
   await wechatCommand.handler("start", ctx);
 
-  expect(engine.startPolling).toHaveBeenCalled();
-  expect(setConfigMock).toHaveBeenCalled();
+  expect(channel.startPolling).toHaveBeenCalled();
+  expect(channel.setConfig).toHaveBeenCalled();
 });
 
 // ---------------------------------------------------------------------------
@@ -173,14 +169,14 @@ test("D20 目标：/wechat start 应同时设置 engine 配置", async () => {
 test("D2 目标：发送失败时不应把 request 标记为已处理", async () => {
   const ctx = createFakeCtx([wechatMetaEntry("R-send-fail"), assistantEntry("reply")]);
   await beforeAgentStart({}, ctx);
-  engine.sendMessageWithRetry.mockRejectedValue(new Error("send failed"));
+  channel.sendReply.mockRejectedValue(new Error("send failed"));
 
   await agentEnd({ messages: [assistantMessage("reply")] }, ctx);
   await agentSettled!({}, ctx);
   await sleep(20);
 
-  expect(engine.sendMessageWithRetry).toHaveBeenCalled();
-  expect(engine.markRequestProcessed).not.toHaveBeenCalled();
+  expect(channel.sendReply).toHaveBeenCalled();
+  expect(channel.markRequestProcessed).not.toHaveBeenCalled();
 });
 
 // ---------------------------------------------------------------------------
@@ -190,21 +186,49 @@ test("D2 目标：发送失败时不应把 request 标记为已处理", async ()
 test("D5 基线：终端 turn 正常结束时由 agent_end 释放 terminal 标志", async () => {
   const ctx = createFakeCtx([plainMessageEntry()]);
   await beforeAgentStart({}, ctx);
-  expect(engine.getTerminalProcessing()).toBe(true);
+  expect(channel.getTerminalProcessing()).toBe(true);
 
   await agentEnd({ messages: [] }, ctx);
   await sleep(20);
 
-  expect(engine.getTerminalProcessing()).toBe(false);
+  expect(channel.getTerminalProcessing()).toBe(false);
 });
 
 test("D5 目标：agent_settled 应释放 terminal 处理标志", async () => {
   const ctx = createFakeCtx([plainMessageEntry()]);
   await beforeAgentStart({}, ctx);
-  expect(engine.getTerminalProcessing()).toBe(true);
+  expect(channel.getTerminalProcessing()).toBe(true);
 
   await agentSettled!({}, ctx);
   await sleep(20);
 
-  expect(engine.getTerminalProcessing()).toBe(false);
+  expect(channel.getTerminalProcessing()).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// 组合根隔离：两次 createExtension()(pi) 互不共享 channel
+// ---------------------------------------------------------------------------
+
+test("组合根：两次 createExtension()(pi) 创建的 channel 互相独立", async () => {
+  const { Channel } = await import("../../src/channel/channel.js");
+  const { createExtension } = await import("../../src/index.ts");
+
+  const seen: unknown[] = [];
+  const original = Channel.prototype.setHost;
+  Channel.prototype.setHost = function (this: unknown, host: never) {
+    seen.push(this);
+    return original.call(this, host);
+  };
+
+  try {
+    const pi1 = createFakePi();
+    const pi2 = createFakePi();
+    createExtension()(pi1.api as never);
+    createExtension()(pi2.api as never);
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).not.toBe(seen[1]);
+  } finally {
+    Channel.prototype.setHost = original;
+  }
 });

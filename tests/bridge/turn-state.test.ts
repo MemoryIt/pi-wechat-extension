@@ -1,22 +1,24 @@
 /**
  * tests/bridge/turn-state.test.ts
  *
- * L3：用探针型假 ExtensionAPI + 假 engine 测试 index.ts 的事件桥接。
+ * L3：用探针型假 ExtensionAPI + 注入的假 Channel 测试 index.ts 的事件桥接。
  * 覆盖：
  *   D1  去重命中后 early-return 仍必须调用 onAiDone（队列释放）
  *   D4  每轮 turn 身份在事件发生时同步解析，不再依赖 module 全局标记 + setTimeout
  *   D21 buildMetaInfo 增量累计成本，第二次 turn 不再重复读取旧 entry
  *
- * 注意：这里 mock 掉 ../../src/engine/wechat.js，只验证 index.ts 自身的桥接逻辑，
- * 不触碰底层模块，也不依赖真实 pi 运行时。
+ * 注意：这里经 `createExtension` 注入 fake channel，不 mock 任何底层模块。
  */
-import { test, expect, mock, beforeEach } from "bun:test";
+import { test, expect, beforeEach } from "bun:test";
 import {
-  installBaseMocks,
-  repoPath,
-} from "../setup/mocks";
-import {
+  createBridgeChannel,
+  resetBridgeChannel,
+  authMock,
+  resetAuthMock,
+  loadExtension,
   createFakePi,
+} from "../setup/bridge-harness";
+import {
   createFakeCtx,
   assistantMessage,
   assistantEntry,
@@ -25,49 +27,8 @@ import {
   sleep,
 } from "../setup/fake-pi";
 
-installBaseMocks();
-
-// ---- 假 engine ------------------------------------------------------------
-const engine = {
-  connectionState: "disconnected",
-  _terminalProcessing: false,
-  setTerminalProcessing: mock((v: boolean) => {
-    engine._terminalProcessing = v;
-  }),
-  getTerminalProcessing: mock(() => engine._terminalProcessing),
-  startPolling: mock(async () => {}),
-  stopPolling: mock(() => {}),
-  reset: mock(() => {}),
-  startTypingKeepalive: mock(async () => {}),
-  stopTypingKeepalive: mock(async () => {}),
-  onAiDone: mock(() => {}),
-  isRequestProcessed: mock(() => false),
-  markRequestProcessed: mock(() => {}),
-  sendMessageWithRetry: mock(async () => {}),
-  sendFileToUser: mock(async () => {}),
-};
-
-// index.ts 用 "./engine/wechat.js" 引入；同时注册 .ts 以保证解析匹配。
-mock.module(repoPath("src", "engine", "wechat.js"), () => ({
-  engine,
-  setPi: mock(() => {}),
-  setConfig: mock(() => {}),
-}));
-mock.module(repoPath("src", "engine", "wechat.ts"), () => ({
-  engine,
-  setPi: mock(() => {}),
-  setConfig: mock(() => {}),
-}));
-
-// index.ts 还会引入登录模块（D11 将来会用到，这里先兜住，避免真实模块副作用）。
-mock.module(repoPath("auth", "login-qr.js"), () => ({
-  startWeixinLoginWithQr: mock(async () => ({ qrcodeUrl: "" })),
-  waitForWeixinLogin: mock(async () => ({ connected: false })),
-  DEFAULT_ILINK_BOT_TYPE: "test-bot-type",
-}));
-
-const extensionModule = await import("../../src/index.ts");
-const register = extensionModule.default as (pi: unknown) => void;
+const channel = createBridgeChannel();
+const register = await loadExtension({ channel, auth: authMock });
 
 const { api, handlers } = createFakePi();
 register(api);
@@ -77,14 +38,9 @@ const agentEnd = handlers.get("agent_end")!;
 const agentSettled = handlers.get("agent_settled")!;
 
 beforeEach(() => {
-  engine._terminalProcessing = false;
-  engine.onAiDone.mockClear();
-  engine.sendMessageWithRetry.mockClear();
-  engine.setTerminalProcessing.mockClear();
-  engine.stopTypingKeepalive.mockClear();
-  engine.isRequestProcessed.mockClear();
-  engine.isRequestProcessed.mockReturnValue(false);
-  engine.markRequestProcessed.mockClear();
+  resetBridgeChannel(channel);
+  resetAuthMock();
+  channel.isRequestProcessed.mockReturnValue(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -98,8 +54,8 @@ test("基线：微信 turn 的 agent_settled 会把最终 AI 回复发回微信"
   await agentEnd({ messages: [assistantMessage("hello wechat")] }, ctx);
   await agentSettled({}, ctx);
 
-  expect(engine.sendMessageWithRetry).toHaveBeenCalledTimes(1);
-  expect(String(engine.sendMessageWithRetry.mock.calls[0][0])).toContain("hello wechat");
+  expect(channel.sendReply).toHaveBeenCalledTimes(1);
+  expect(String(channel.sendReply.mock.calls[0][0])).toContain("hello wechat");
 });
 
 // ---------------------------------------------------------------------------
@@ -110,12 +66,12 @@ test("D1 目标：重复 requestId 命中去重后仍应调用 onAiDone 释放�
   const ctx = createFakeCtx([wechatMetaEntry("R-dup"), assistantEntry("hello")]);
   await beforeAgentStart({}, ctx);
 
-  engine.isRequestProcessed.mockReturnValue(true);
+  channel.isRequestProcessed.mockReturnValue(true);
   await agentEnd({ messages: [assistantMessage("hello")] }, ctx);
   await agentSettled({}, ctx);
 
-  expect(engine.sendMessageWithRetry).not.toHaveBeenCalled();
-  expect(engine.onAiDone).toHaveBeenCalled();
+  expect(channel.sendReply).not.toHaveBeenCalled();
+  expect(channel.onAiDone).toHaveBeenCalled();
 });
 
 // ---------------------------------------------------------------------------
@@ -136,10 +92,10 @@ test("D4 目标：前一微信 turn 的回复不应被后一终端 turn 覆盖�
   await agentSettled({}, terminalCtx);
   await sleep(20);
 
-  expect(engine.sendMessageWithRetry).toHaveBeenCalledTimes(1);
-  expect(String(engine.sendMessageWithRetry.mock.calls[0][0])).toContain("wechat reply");
+  expect(channel.sendReply).toHaveBeenCalledTimes(1);
+  expect(String(channel.sendReply.mock.calls[0][0])).toContain("wechat reply");
   // 终端 turn 不得发送任何微信消息。
-  expect(engine.getTerminalProcessing()).toBe(false);
+  expect(channel.getTerminalProcessing()).toBe(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -149,7 +105,7 @@ test("D4 目标：前一微信 turn 的回复不应被后一终端 turn 覆盖�
 test("D4 目标：wechat_meta 位于最后一条 assistant 之后时判定为微信 turn", async () => {
   const ctx = createFakeCtx([wechatMetaEntry("R-new")]);
   await beforeAgentStart({}, ctx);
-  expect(engine.setTerminalProcessing).not.toHaveBeenCalledWith(true);
+  expect(channel.setTerminalProcessing).not.toHaveBeenCalledWith(true);
 });
 
 test("D4 目标：微信 turn 之后的终端 turn 不应被误判为微信", async () => {
@@ -160,7 +116,7 @@ test("D4 目标：微信 turn 之后的终端 turn 不应被误判为微信", as
     assistantEntry("prev reply", "a-prev"),
   ]);
   await beforeAgentStart({}, ctx);
-  expect(engine.setTerminalProcessing).toHaveBeenCalledWith(true);
+  expect(channel.setTerminalProcessing).toHaveBeenCalledWith(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -209,6 +165,6 @@ test("D21 目标：第二次 turn 处理不再重复读取旧 entry（增量累�
 
   // 旧 entry 不应再次被读取，但总成本仍需累计 0.1 + 0.2。
   expect(firstUsageReads).toBe(1);
-  const lastReply = String(engine.sendMessageWithRetry.mock.calls.at(-1)?.[0] ?? "");
+  const lastReply = String(channel.sendReply.mock.calls.at(-1)?.[0] ?? "");
   expect(lastReply).toContain("$0.300");
 });
