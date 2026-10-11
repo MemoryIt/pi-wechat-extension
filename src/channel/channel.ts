@@ -1,7 +1,7 @@
 /**
  * channel/channel.ts - 微信通道粗粒度编排器
  *
- * 承载原 `WechatEngine` 的通道编排逻辑：持有 `ChannelState` 与各协作类
+ * 承载单用户通道的编排逻辑：持有 `ChannelState` 与各协作类
  * （`PollingLoop` / `TurnQueue` / `SerialTaskQueue` / `MediaStore` /
  * `TypingController` / `MessageSender` / `MessageRouter`），并装配为完整通道。
  *

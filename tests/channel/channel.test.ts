@@ -1,7 +1,7 @@
 /**
  * tests/channel/channel.test.ts
  *
- * L2：直接测试 src/channel/channel.ts 的 `Channel`（不再经 WechatEngine 门面）。
+ * L2：直接测试 src/channel/channel.ts 的 `Channel`（不再经已删除的引擎门面）。
  * 微信边界经注入的端口 fake（inbound/outbound/media）观测，storage/config 用真实实现 + 临时目录。
  *
  * 覆盖：D3 轮询重入、D6 同步抛错被吞、D7 队列 rejection 未处理、

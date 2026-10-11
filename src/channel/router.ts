@@ -7,7 +7,7 @@
  * - processMediaInBackground: 后台下载并落盘媒体
  *
  * 仅依赖注入的窄接口（queue / mediaStore / mediaQueue / sender / host / opts / logger），
- * 不直接持有 WechatEngine，便于单测。最初自 wechat.ts 抽出，行为保持一致。
+ * 不直接持有通道编排器，便于单测。最初自组合根抽出，行为保持一致。
  */
 
 import { MessageItemType } from "../ports/types.js";
