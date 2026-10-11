@@ -10,7 +10,7 @@ import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } fr
 import { saveToken, upsertAccount } from "../storage/state.js";
 import { setConfig } from "../engine/wechat.js";
 import type { WechatEngine } from "../engine/wechat.js";
-import { redactToken } from "../../util/redact.js";
+import { redactToken } from "../shared/redact.js";
 import { isDebugEnabled } from "../shared/config.js";
 import { createLogger } from "../shared/logger.js";
 

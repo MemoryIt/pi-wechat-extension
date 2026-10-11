@@ -20,7 +20,7 @@
 import { readFileSync, writeFileSync, chmodSync, mkdirSync, existsSync, unlinkSync, rmSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { resolveStateDir } from "../shared/paths.js";
-import { logger } from "../../util/logger.js";
+import { logger } from "../shared/file-logger.js";
 
 // ============== 类型定义 ==============
 
