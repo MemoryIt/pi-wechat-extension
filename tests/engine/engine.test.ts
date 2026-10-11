@@ -213,6 +213,30 @@ test("基线：sendFileToUser 以本地文件路径提交底层发送（不再�
 });
 
 // ---------------------------------------------------------------------------
+// sendWithRetry：缺凭证前置检查（PA-3 记录的行为差异，恢复旧行为）
+// ---------------------------------------------------------------------------
+
+test("sendWithRetry 缺凭证：立即抛错、不调用底层发送、不进入重试", async () => {
+  // 未 initSingleUser：userId/contextToken 均为空 -> canSend()=false
+  const started = Date.now();
+  await expect(engine.sendMessageWithRetry("hello")).rejects.toThrow(
+    "Single user not initialized",
+  );
+
+  // 底层发送完全未被调用：证明入口即抛，未进入重试循环、未 sleep
+  expect(outboundMock.sendText).not.toHaveBeenCalled();
+  expect(Date.now() - started).toBeLessThan(900);
+});
+
+test("sendWithRetry 凭证就绪：正常走底层发送（一次成功）", async () => {
+  await engine.initSingleUser();
+  await engine.sendMessageWithRetry("hello");
+
+  expect(outboundMock.sendText).toHaveBeenCalledTimes(1);
+  expect(outboundMock.sendText).toHaveBeenCalledWith("hello");
+});
+
+// ---------------------------------------------------------------------------
 // D15：isSlashCommand 魔法数字 + 只看首条
 // ---------------------------------------------------------------------------
 
