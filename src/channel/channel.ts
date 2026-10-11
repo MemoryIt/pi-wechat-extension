@@ -5,9 +5,9 @@
  * （`PollingLoop` / `TurnQueue` / `SerialTaskQueue` / `MediaStore` /
  * `TypingController` / `MessageSender` / `MessageRouter`），并装配为完整通道。
  *
- * 组合根职责：未注入 ports 时在此构造默认 adapters（供后续 S6 迁移到 index）。
- * 依赖方向单向：`channel/*` 不 import `../engine/*`；宿主依赖使用
- * `ports/pi-host` 的 `PiHost`。
+ * 依赖方向单向：`channel/*` 只依赖 `ports/`、`storage/` 与 `shared/`，不 import
+ * 微信侧适配层或 `../engine/*`；宿主依赖使用 `ports/pi-host` 的 `PiHost`。
+ * 端口实现与 `ChannelState` 由组合根（`src/index.ts`）组装后经 `ChannelDeps.ports` 注入。
  */
 
 import type { WeixinMessage, WechatCredentials } from "../ports/types.js";
@@ -15,9 +15,6 @@ import { MessageItemType } from "../ports/types.js";
 import type { WechatInbound } from "../ports/inbound.js";
 import type { WechatOutbound } from "../ports/outbound.js";
 import type { WechatMedia } from "../ports/media.js";
-import { createWechatInbound } from "../adapters/inbound.js";
-import { createWechatOutbound } from "../adapters/outbound.js";
-import { createWechatMedia } from "../adapters/media.js";
 import * as storage from "../storage/state.js";
 import { isDebugEnabled } from "../shared/config.js";
 import { sleep as defaultSleep, formatTimestamp } from "../shared/time.js";
@@ -35,11 +32,11 @@ import { MessageSender } from "./sender.js";
 import { MessageRouter } from "./router.js";
 import { MediaStore } from "./media-store.js";
 
-/** 可注入的微信边界端口（测试用 fake；生产缺省时由本类构造 adapters）。 */
+/** 微信边界端口（生产由组合根注入真实端口实现；测试注入 fake）。 */
 export interface ChannelPorts {
-  inbound?: WechatInbound;
-  outbound?: WechatOutbound;
-  media?: WechatMedia;
+  inbound: WechatInbound;
+  outbound: WechatOutbound;
+  media: WechatMedia;
 }
 
 /** Channel 可选的初始依赖。 */
@@ -48,7 +45,7 @@ export interface ChannelDeps {
   host?: PiHost;
   config?: WechatApiOpts;
   notifier?: Notifier;
-  ports?: ChannelPorts;
+  ports: ChannelPorts;
   logger?: PluginLogger;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -67,7 +64,7 @@ export class Channel {
   private readonly sender: MessageSender;
   private readonly router: MessageRouter;
 
-  constructor(deps: ChannelDeps = {}) {
+  constructor(deps: ChannelDeps) {
     this.state = deps.state ?? new ChannelState();
     if (deps.host) this.state.host = deps.host;
     if (deps.config) this.state.config = deps.config;
@@ -79,19 +76,7 @@ export class Channel {
       this.logger.error("Media background task failed", err),
     );
 
-    const outbound =
-      deps.ports?.outbound ??
-      createWechatOutbound({
-        getCredentials: () => this.getCredentials(),
-        logger: this.logger,
-      });
-    const inbound = deps.ports?.inbound ?? createWechatInbound();
-    const media =
-      deps.ports?.media ??
-      createWechatMedia({
-        log: (message) => this.logger.debug(message),
-        errLog: (message) => this.logger.error(message),
-      });
+    const { inbound, outbound, media } = deps.ports;
 
     this.mediaStore = new MediaStore({
       media,
@@ -378,24 +363,14 @@ export class Channel {
   }
 
   private getCurrentOpts(): WechatApiOpts | null {
-    const cfg = this.state.config;
-    return cfg ? { baseUrl: cfg.baseUrl, token: cfg.token } : null;
+    return this.state.getOpts();
   }
 
   /**
    * 组装当前单用户凭证；任一缺失返回 null。
    */
   private getCredentials(): WechatCredentials | null {
-    const config = this.state.config;
-    if (!config || !this.state.userId || !this.state.contextToken) {
-      return null;
-    }
-    return {
-      baseUrl: config.baseUrl,
-      token: config.token,
-      userId: this.state.userId,
-      contextToken: this.state.contextToken,
-    };
+    return this.state.getCredentials();
   }
 
   /**
