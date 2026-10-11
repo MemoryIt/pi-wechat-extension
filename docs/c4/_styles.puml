@@ -1,7 +1,7 @@
 ' ============================================================================
 ' 共享 C4 样式（元素标签 / 关系标签）
 ' 使用前提：调用方已 !include <C4/C4_Component>
-' 由 docs/c4/03-components.puml 与 03a-engine.puml include。
+' 由 docs/c4/03-components.puml、03a-channel.puml、03b-ports-adapters.puml include。
 ' ============================================================================
 
 ' 元素标签：自写 / 第三方适配 / 外部

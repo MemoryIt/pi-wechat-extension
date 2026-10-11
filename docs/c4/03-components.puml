@@ -3,8 +3,9 @@
 ' C4 Level 3 - Component (主图，折叠版)
 ' 系统：pi-wechat-extension（进程内插件）
 '
-' 事实来源：docs/ARCHITECTURE.md
-' 目的：表达插件内部分层与依赖方向约束（Engine 内部细节见 03a-engine.puml）。
+' 事实来源：docs/ARCHITECTURE.md、src/
+' 目的：表达 Ports & Adapters 分层与依赖方向约束
+'       （Channel 内部细节见 03a-channel.puml；端口/适配器边界见 03b-ports-adapters.puml）。
 ' 抽象：本图以「host 进程」为范围；插件为 scope/边界，其内部为 Components。
 ' ============================================================================
 
@@ -25,41 +26,48 @@ Container_Boundary(host, "pi coding agent 进程 (Node.js ≥ 22)") {
 
   Container_Boundary(plugin, "pi-wechat-extension（进程内插件）") {
 
-    Component(index, "index", "组合根", "装配 tool / command / event 到 ExtensionAPI", $tags="self")
+    Component(index, "index", "组合根", "createExtension(deps?)：组装 PiHost + Channel + WechatAuth", $tags="self")
     Component(bridge, "Bridge", "pi 适配层", "events / turn / meta / commands / tool-send-file / login", $tags="self")
-    Component(engine, "Engine", "引擎层", "wechat / polling / queue / router / media-store / typing / sender", $tags="self")
+    Component(channel, "Channel", "通道核心", "channel / state / polling / queue / router / media-store / typing / sender", $tags="self")
+    Component(ports, "Ports", "端口接口", "inbound / outbound / media / auth / pi-host / types", $tags="self")
+    Component(adapter, "Adapters", "微信侧薄包装", "inbound / outbound / media / auth（唯一接触 vendor）", $tags="thirdparty")
     Component(storage, "Storage", "持久化", "state / state-dir（原子写 + 按路径串行）", $tags="self")
-    Component(shared, "Shared", "基础", "config / logger / time / paths / types", $tags="self")
-    Component(adapter, "WeChat Adapter", "第三方适配层", "api / auth / cdn / media / messaging / util（vendored from openclaw-weixin）", $tags="thirdparty")
+    Component(shared, "Shared", "基础", "config / logger / time / paths / types / redact / file-logger", $tags="self")
   }
 }
 
 ' --- 关系（只画允许方向）-------------------------------------------------
 Rel(user, bridge, "/wechat login 等终端命令", $tags="allowed")
 Rel(index, bridge, "装配 / 注册", $tags="allowed")
-Rel(index, engine, "setPi / 单例", $tags="allowed")
-Rel(bridge, engine, "调用引擎", $tags="allowed")
+Rel(index, channel, "new Channel + setHost", $tags="allowed")
+Rel(index, adapter, "默认 WechatAuth 工厂", $tags="allowed")
+Rel(bridge, channel, "调用通道公共方法（startPolling / sendReply / …）", $tags="allowed")
+Rel(bridge, ports, "WechatAuth（类型）", $tags="allowed")
 Rel(bridge, storage, "凭证 / 账号", $tags="allowed")
-Rel(bridge, adapter, "登录 / 脱敏", $tags="allowed")
 Rel(bridge, piApi, "事件 / 命令 / 工具 / 注入消息", $tags="event")
 
-Rel(engine, storage, "状态 / cursor", $tags="allowed")
-Rel(engine, shared, "配置 / 日志 / 时间", $tags="allowed")
-Rel(engine, adapter, "调用公开 API", $tags="allowed")
+Rel(channel, ports, "依赖端口接口", $tags="allowed")
+Rel(channel, storage, "凭证 / cursor / context token", $tags="allowed")
+Rel(channel, shared, "配置 / 日志 / 时间", $tags="allowed")
+Rel(channel, adapter, "缺省构造默认端口实现（组合根职责，待迁 index）", $tags="allowed")
+Rel(adapter, ports, "实现端口", $tags="allowed")
 
 Rel(storage, stateDir, "读写凭证 / cursor", $tags="allowed")
-Rel(engine, stateDir, "媒体落盘 (media-store)", $tags="allowed")
+Rel(channel, stateDir, "媒体落盘 (media-store)", $tags="allowed")
 Rel(adapter, ilink, "HTTPS：长轮询 / 发送 / 上传下载 / typing / 登录", $tags="allowed")
 
 ' --- 架构约束 ------------------------------------------------------------
 note as Constraints
   **硬约束**
-  - 依赖方向：index → bridge → engine → shared / storage → adapter
-  - 禁止反向：engine / shared 不得 import bridge
-  - 禁止：storage 不得 import engine
-  - adapter 视为第三方：只调用其公开函数，不修改内部实现
-  - Storage / Shared 亦通过 adapter 的 util（日志 / 脱敏）
-  - Engine 内部细节见 **03a-engine.puml**
+  - 依赖方向：index → bridge / channel / adapters / ports
+  - bridge → channel（类型）/ ports（WechatAuth）；channel → ports / storage / shared
+  - adapters → ports + vendor；ports → 仅 types.ts 转发 vendor 协议类型
+  - 禁止反向：bridge / channel / ports / adapters / shared 不得 import bridge；
+    channel 不得 import bridge；storage 不得 import channel / bridge
+  - vendor（api / auth / cdn / media / messaging / util）只允许被 adapters
+    （及 ports/types、shared/redact、shared/file-logger 两个再导出边界）引用
+  - 过渡：channel 目前缺省构造默认 adapters，目标迁往 index（组合根）
+  - Channel 内部细节见 **03a-channel.puml**；端口/适配器边界见 **03b-ports-adapters.puml**
 end note
 
 SHOW_LEGEND()
