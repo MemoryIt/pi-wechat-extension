@@ -65,7 +65,7 @@ beforeEach(async () => {
     host: pi,
     config: { baseUrl: opts.baseUrl, token: opts.token },
   });
-  (engine as unknown as AnyEngine).state.isTerminalMessageProcessing = false;
+  (engine as unknown as AnyEngine).channel.state.isTerminalMessageProcessing = false;
 
   await seedSingleUser(storage);
 });
@@ -174,8 +174,8 @@ test("D13 目标：同一毫秒内的 requestId 应保持唯一", () => {
   setSystemTime(new Date("2026-01-02T03:04:05.678Z"));
   try {
     const e = engine as unknown as AnyEngine;
-    const a = e.generateRequestId();
-    const b = e.generateRequestId();
+    const a = e.channel.generateRequestId();
+    const b = e.channel.generateRequestId();
     expect(a).not.toBe(b);
   } finally {
     setSystemTime();
@@ -194,7 +194,7 @@ test("D6 目标：sendUserMessage 抛错后应释放 isAiProcessing 且不冒泡
 
   // 不得向上冒泡成「轮询失败 / connectionState=error」
   await expect(engine.handleMessage(textMessage("hi"), opts)).resolves.toBeUndefined();
-  expect((engine as unknown as AnyEngine).queue.isBusy()).toBe(false);
+  expect((engine as unknown as AnyEngine).channel.queue.isBusy()).toBe(false);
   expect(engine.connectionState).toBe("disconnected");
 });
 
@@ -242,14 +242,14 @@ test("sendWithRetry 凭证就绪：正常走底层发送（一次成功）", asy
 
 test("D15 基线：首条即为文本且以 / 开头时判定为 slash command", () => {
   const e = engine as unknown as AnyEngine;
-  const isSlash = e.isSlashCommand.bind(engine);
+  const isSlash = e.channel.isSlashCommand.bind(e.channel);
   expect(isSlash({ item_list: [{ type: MessageItemType.TEXT, text_item: { text: "/help" } }] })).toBe(true);
   expect(isSlash({ item_list: [{ type: MessageItemType.TEXT, text_item: { text: "hi" } }] })).toBe(false);
 });
 
 test("D15 目标：应能识别非首条文本中的 slash command", () => {
   const e = engine as unknown as AnyEngine;
-  const isSlash = e.isSlashCommand.bind(engine);
+  const isSlash = e.channel.isSlashCommand.bind(e.channel);
   const msg = {
     item_list: [
       { type: MessageItemType.IMAGE, image_item: {} },
@@ -270,7 +270,7 @@ test("D16 目标：contextToken 变化后应重新获取 typing ticket", async (
   const t1 = await engine.getTypingTicket();
   expect(t1).toBe("T1");
 
-  (engine as unknown as AnyEngine).state.contextToken = "CTX-NEW";
+  (engine as unknown as AnyEngine).channel.state.contextToken = "CTX-NEW";
   outboundMock.getTypingTicket.mockResolvedValue("T2");
 
   const t2 = await engine.getTypingTicket();
@@ -348,7 +348,7 @@ test("D16b 目标：typing keepalive 的 interval 应调用 unref", async () => 
  */
 function wrapTriggerToObserveRejection(captured: unknown[]): () => void {
   const e = engine as unknown as AnyEngine;
-  const router = e.router as { execute: (msg: unknown, requestId: string, o: unknown) => Promise<void> };
+  const router = e.channel.router as { execute: (msg: unknown, requestId: string, o: unknown) => Promise<void> };
   const original = router.execute.bind(router);
   router.execute = (msg: unknown, requestId: string, o: unknown) => {
     const p = original(msg, requestId, o) as Promise<void>;
@@ -367,7 +367,7 @@ test("D7 目标：队列排空时 rejecting turn 应由引擎处理并释放状�
   const captured: unknown[] = [];
   const restore = wrapTriggerToObserveRejection(captured);
   try {
-    e.queue.setBusy(true);
+    e.channel.queue.setBusy(true);
     await engine.triggerAi(textMessage("queued"), "R-queued", opts);
 
     pi.sendUserMessage.mockImplementation(() => {
@@ -377,7 +377,7 @@ test("D7 目标：队列排空时 rejecting turn 应由引擎处理并释放状�
     engine.onAiDone();
     await sleep(80);
 
-    expect(e.queue.isBusy()).toBe(false);
+    expect(e.channel.queue.isBusy()).toBe(false);
   } finally {
     restore();
   }
@@ -452,7 +452,7 @@ test("B6 目标：终端处理期间连发消息按序排队，排空后 request
   await engine.triggerAi(textMessage("m3"), "r3", opts);
 
   const e = engine as unknown as AnyEngine;
-  expect(e.queue.size).toBe(3);
+  expect(e.channel.queue.size).toBe(3);
 
   // 终端处理结束，逐轮通知完成并排空队列
   engine.setTerminalProcessing(false);
@@ -468,7 +468,7 @@ test("B6 目标：终端处理期间连发消息按序排队，排空后 request
 
   expect(requestIds).toEqual(["r1", "r2", "r3"]);
   expect(contents).toEqual(["m1", "m2", "m3"]);
-  expect(e.queue.size).toBe(0);
+  expect(e.channel.queue.size).toBe(0);
 });
 
 // ---------------------------------------------------------------------------
@@ -502,7 +502,7 @@ test("B5 目标：媒体消息立即 ack（不含路径），下载未完成不�
 
   // 下载尚未完成：history 未写，且未占用 AI 忙闲标记（不阻塞轮询）
   expect(pi.calls.sendMessage.length).toBe(0);
-  expect((engine as unknown as AnyEngine).queue.isBusy()).toBe(false);
+  expect((engine as unknown as AnyEngine).channel.queue.isBusy()).toBe(false);
 
   release(undefined);
   await waitFor(() => pi.calls.sendMessage.length > 0);
