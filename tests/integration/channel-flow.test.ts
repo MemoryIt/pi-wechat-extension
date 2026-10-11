@@ -14,6 +14,7 @@ import { installBaseMocks, resetAgentDir } from "../setup/mocks";
 installBaseMocks();
 
 const { Channel } = await import("../../src/channel/channel.js");
+const { ChannelState } = await import("../../src/channel/state.js");
 const { MessageItemType } = await import("../../src/ports/types.js");
 const storage = await import("../../src/storage/state.js");
 
@@ -110,7 +111,7 @@ beforeEach(async () => {
   resetAgentDir();
   fakeHost = createFakeHost();
   ports = makePorts();
-  channel = new Channel({ host: fakeHost.host, config: opts, ports });
+  channel = new Channel({ state: new ChannelState(), host: fakeHost.host, config: opts, ports });
   await seedSingleUser();
 });
 

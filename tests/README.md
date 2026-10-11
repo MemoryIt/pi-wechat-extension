@@ -10,7 +10,7 @@
 
 | 阶段 | 内容 | 新增/受影响测试 |
 |---|---|---|
-| R1 | 去模块全局，注入 host/config + `new Channel()` | `channel.test.ts` 隔离实例用例 |
+| R1 | 去模块全局，注入 host/config + `new Channel({ state, ports })`（早期版本为无参构造，PA-9 起 ports 必填） | `channel.test.ts` 隔离实例用例 |
 | R2 | 提取 `PollingLoop` + B4 `needs_relogin` 通知 | `channel.test.ts` B4 用例 |
 | R3 | 提取 `TurnQueue` + B6 关联性 | `queue.test.ts`、`channel.test.ts` 连发排空用例 |
 | R4 | 提取 `MediaStore` + B5 后台串行媒体 | `media-store.test.ts`、`channel.test.ts` 非阻塞/串行用例 |

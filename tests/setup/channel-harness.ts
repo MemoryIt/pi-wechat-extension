@@ -5,7 +5,7 @@
  * - 只安装与微信无关的基础 mock（pi SDK / typebox / util/logger），
  *   不再对任何 vendor 路径做模块级替换。
  * - 暴露可控的端口 fake（inbound/outbound/media）与便捷的凭证 seed / fake pi。
- * - 测试通过 `new Channel({ host, config, ports: { inbound, outbound, media } })`
+ * - 测试通过 `new Channel({ state: new ChannelState(), ports: { inbound, outbound, media } })`
  *   注入 fake ports（见 tests/channel/channel.test.ts 的 makeChannel）。
  *
  * 不读、不改底层模块实现；fake 只在测试运行时生效。

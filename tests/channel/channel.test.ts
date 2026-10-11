@@ -33,6 +33,7 @@ installChannelMocks();
 
 const channelModule = await importChannel();
 const { Channel } = channelModule;
+const { ChannelState } = await import("../../src/channel/state.js");
 const storage = await importStorage();
 const config = await importConfig();
 
@@ -51,6 +52,7 @@ interface ChannelOverrides {
 
 function makeChannel(overrides: ChannelOverrides = {}) {
   return new Channel({
+    state: new ChannelState(),
     host: overrides.host as never,
     config: overrides.config as never,
     ports: {
