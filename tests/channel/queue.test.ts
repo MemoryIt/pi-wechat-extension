@@ -1,5 +1,5 @@
 /**
- * tests/engine/queue.test.ts
+ * tests/channel/queue.test.ts
  *
  * TurnQueue 纯单测（无外部依赖）：FIFO、忙闲/requestId、去重、
  * 过期清理（阈值 50 / 1h）、reset。

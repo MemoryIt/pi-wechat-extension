@@ -1,5 +1,5 @@
 /**
- * tests/engine/router.test.ts
+ * tests/channel/router.test.ts
  *
  * B2：直接对 MessageRouter（turn 执行 + 队列排空）做单测。
  * 不触碰底层边界，用 fake queue/mediaStore/mediaQueue/sender/host/logger。

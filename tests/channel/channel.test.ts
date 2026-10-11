@@ -1,7 +1,7 @@
 /**
- * tests/engine/engine.test.ts
+ * tests/channel/channel.test.ts
  *
- * L2：直接测试 wechat.ts 的 WechatEngine。
+ * L2：直接测试 src/channel/channel.ts 的 `Channel`（不再经 WechatEngine 门面）。
  * 微信边界经注入的端口 fake（inbound/outbound/media）观测，storage/config 用真实实现 + 临时目录。
  *
  * 覆盖：D3 轮询重入、D6 同步抛错被吞、D7 队列 rejection 未处理、
@@ -12,11 +12,11 @@ import { test, expect, mock, beforeEach } from "bun:test";
 import { setSystemTime } from "bun:test";
 import { resetAgentDir } from "../setup/mocks";
 import {
-  installEngineMocks,
-  importEngine,
+  installChannelMocks,
+  importChannel,
   importStorage,
   importConfig,
-  createEnginePi,
+  createChannelPi,
   resetPortMocks,
   inboundMock,
   outboundMock,
@@ -27,29 +27,37 @@ import {
   sleep,
   waitFor,
   MessageItemType,
-} from "../setup/engine-harness";
+} from "../setup/channel-harness";
 
-installEngineMocks();
+installChannelMocks();
 
-const engineModule = await importEngine();
-const { createWechatEngine } = engineModule;
+const channelModule = await importChannel();
+const { Channel } = channelModule;
 const storage = await importStorage();
 const config = await importConfig();
 
-type AnyEngine = Record<string, any>;
+type AnyChannel = Record<string, any>;
 
-let pi: ReturnType<typeof createEnginePi>;
-let engine: ReturnType<typeof createWechatEngine>;
+let pi: ReturnType<typeof createChannelPi>;
+let channel: InstanceType<typeof Channel>;
 
-function makeEngine(
-  overrides: Partial<{ host: unknown; config: unknown; inbound: unknown; outbound: unknown; media: unknown }> = {},
-) {
-  return createWechatEngine({
+interface ChannelOverrides {
+  host?: unknown;
+  config?: unknown;
+  inbound?: unknown;
+  outbound?: unknown;
+  media?: unknown;
+}
+
+function makeChannel(overrides: ChannelOverrides = {}) {
+  return new Channel({
     host: overrides.host as never,
     config: overrides.config as never,
-    inbound: (overrides.inbound ?? inboundMock) as never,
-    outbound: (overrides.outbound ?? outboundMock) as never,
-    media: (overrides.media ?? mediaMock) as never,
+    ports: {
+      inbound: (overrides.inbound ?? inboundMock) as never,
+      outbound: (overrides.outbound ?? outboundMock) as never,
+      media: (overrides.media ?? mediaMock) as never,
+    },
   });
 }
 
@@ -60,12 +68,12 @@ beforeEach(async () => {
   delete process.env.WECHAT_DEBUG;
   delete process.env.WECHAT_MEDIA_PATH;
 
-  pi = createEnginePi();
-  engine = makeEngine({
+  pi = createChannelPi();
+  channel = makeChannel({
     host: pi,
     config: { baseUrl: opts.baseUrl, token: opts.token },
   });
-  (engine as unknown as AnyEngine).channel.state.isTerminalMessageProcessing = false;
+  (channel as unknown as AnyChannel).state.isTerminalMessageProcessing = false;
 
   await seedSingleUser(storage);
 });
@@ -85,7 +93,7 @@ test("基线：startPolling 消费文本消息、写入 wechat_meta 并持久化
     return new Promise((res) => resolvers.push(res));
   });
 
-  const p = engine.startPolling(opts);
+  const p = channel.startPolling(opts);
   await waitFor(() => pi.calls.sendUserMessage.length > 0);
   await sleep(30);
 
@@ -93,7 +101,7 @@ test("基线：startPolling 消费文本消息、写入 wechat_meta 并持久化
   expect(String(pi.calls.sendUserMessage[0][0])).toContain("hello engine");
   expect(await storage.loadSyncCursor("acc1")).toBe("cursor-1");
 
-  engine.stopPolling();
+  channel.stopPolling();
   resolvers.splice(0).forEach((r) => r({ messages: [], cursor: "cursor-1" }));
   await p;
 });
@@ -111,13 +119,13 @@ test("D3 目标：重复 startPolling 不应并发两条轮询循环", async () 
       }),
   );
 
-  const p1 = engine.startPolling(opts);
-  const p2 = engine.startPolling(opts);
+  const p1 = channel.startPolling(opts);
+  const p2 = channel.startPolling(opts);
 
   await sleep(60);
   expect(inboundMock.getUpdates).toHaveBeenCalledTimes(1);
 
-  engine.stopPolling();
+  channel.stopPolling();
   resolvers.splice(0).forEach((fn) => fn());
   await Promise.allSettled([p1, p2]);
 });
@@ -134,7 +142,7 @@ test("D9 限制说明：底层 getUpdates 不接受 AbortSignal（核心层改�
     return new Promise((res) => resolvers.push(res));
   });
 
-  const p = engine.startPolling(opts);
+  const p = channel.startPolling(opts);
   await waitFor(() => captured !== null);
 
   expect(captured).not.toBeNull();
@@ -143,7 +151,7 @@ test("D9 限制说明：底层 getUpdates 不接受 AbortSignal（核心层改�
   // 仍会在后台直到自身超时。
   expect("signal" in (captured as Record<string, unknown>)).toBe(false);
 
-  engine.stopPolling();
+  channel.stopPolling();
   resolvers.splice(0).forEach((r) => r({ messages: [], cursor: "" }));
   await p;
 });
@@ -152,11 +160,11 @@ test("D9 目标：stopPolling 后 startPolling 应在 300ms 内 resolve", async 
   // getUpdates 永不 resolve，模拟底层长轮询挂起
   inboundMock.getUpdates.mockImplementation(() => new Promise(() => {}));
 
-  const p = engine.startPolling(opts);
+  const p = channel.startPolling(opts);
   await waitFor(() => inboundMock.getUpdates.mock.calls.length >= 1);
 
   const started = Date.now();
-  engine.stopPolling();
+  channel.stopPolling();
   await Promise.race([
     p,
     sleep(300).then(() => {
@@ -173,9 +181,9 @@ test("D9 目标：stopPolling 后 startPolling 应在 300ms 内 resolve", async 
 test("D13 目标：同一毫秒内的 requestId 应保持唯一", () => {
   setSystemTime(new Date("2026-01-02T03:04:05.678Z"));
   try {
-    const e = engine as unknown as AnyEngine;
-    const a = e.channel.generateRequestId();
-    const b = e.channel.generateRequestId();
+    const c = channel as unknown as AnyChannel;
+    const a = c.generateRequestId();
+    const b = c.generateRequestId();
     expect(a).not.toBe(b);
   } finally {
     setSystemTime();
@@ -187,24 +195,24 @@ test("D13 目标：同一毫秒内的 requestId 应保持唯一", () => {
 // ---------------------------------------------------------------------------
 
 test("D6 目标：sendUserMessage 抛错后应释放 isAiProcessing 且不冒泡", async () => {
-  await engine.initSingleUser();
+  await channel.initSession();
   pi.sendUserMessage.mockImplementation(() => {
     throw new Error("agent busy");
   });
 
   // 不得向上冒泡成「轮询失败 / connectionState=error」
-  await expect(engine.handleMessage(textMessage("hi"), opts)).resolves.toBeUndefined();
-  expect((engine as unknown as AnyEngine).channel.queue.isBusy()).toBe(false);
-  expect(engine.connectionState).toBe("disconnected");
+  await expect(channel.handleMessage(textMessage("hi"), opts)).resolves.toBeUndefined();
+  expect((channel as unknown as AnyChannel).queue.isBusy()).toBe(false);
+  expect(channel.connectionState).toBe("disconnected");
 });
 
 // ---------------------------------------------------------------------------
-// D14：sendFileToUser 只以本地文件名提交（底层不支持自定义显示名）
+// D14：sendFile 只以本地文件名提交（底层不支持自定义显示名）
 // ---------------------------------------------------------------------------
 
-test("基线：sendFileToUser 以本地文件路径提交底层发送（不再传 display-name 字段）", async () => {
-  await engine.initSingleUser();
-  await engine.sendFileToUser("/tmp/sample.pptx");
+test("基线：sendFile 以本地文件路径提交底层发送（不再传 display-name 字段）", async () => {
+  await channel.initSession();
+  await channel.sendFile("/tmp/sample.pptx");
 
   expect(outboundMock.sendFile).toHaveBeenCalledTimes(1);
   expect(outboundMock.sendFile).toHaveBeenCalledWith("/tmp/sample.pptx");
@@ -213,13 +221,13 @@ test("基线：sendFileToUser 以本地文件路径提交底层发送（不再�
 });
 
 // ---------------------------------------------------------------------------
-// sendWithRetry：缺凭证前置检查（PA-3 记录的行为差异，恢复旧行为）
+// sendReply：缺凭证前置检查（PA-3 记录的行为差异，恢复旧行为）
 // ---------------------------------------------------------------------------
 
-test("sendWithRetry 缺凭证：立即抛错、不调用底层发送、不进入重试", async () => {
-  // 未 initSingleUser：userId/contextToken 均为空 -> canSend()=false
+test("sendReply 缺凭证：立即抛错、不调用底层发送、不进入重试", async () => {
+  // 未 initSession：userId/contextToken 均为空 -> canSend()=false
   const started = Date.now();
-  await expect(engine.sendMessageWithRetry("hello")).rejects.toThrow(
+  await expect(channel.sendReply("hello")).rejects.toThrow(
     "Single user not initialized",
   );
 
@@ -228,9 +236,9 @@ test("sendWithRetry 缺凭证：立即抛错、不调用底层发送、不进入
   expect(Date.now() - started).toBeLessThan(900);
 });
 
-test("sendWithRetry 凭证就绪：正常走底层发送（一次成功）", async () => {
-  await engine.initSingleUser();
-  await engine.sendMessageWithRetry("hello");
+test("sendReply 凭证就绪：正常走底层发送（一次成功）", async () => {
+  await channel.initSession();
+  await channel.sendReply("hello");
 
   expect(outboundMock.sendText).toHaveBeenCalledTimes(1);
   expect(outboundMock.sendText).toHaveBeenCalledWith("hello");
@@ -241,15 +249,15 @@ test("sendWithRetry 凭证就绪：正常走底层发送（一次成功）", asy
 // ---------------------------------------------------------------------------
 
 test("D15 基线：首条即为文本且以 / 开头时判定为 slash command", () => {
-  const e = engine as unknown as AnyEngine;
-  const isSlash = e.channel.isSlashCommand.bind(e.channel);
+  const c = channel as unknown as AnyChannel;
+  const isSlash = c.isSlashCommand.bind(c);
   expect(isSlash({ item_list: [{ type: MessageItemType.TEXT, text_item: { text: "/help" } }] })).toBe(true);
   expect(isSlash({ item_list: [{ type: MessageItemType.TEXT, text_item: { text: "hi" } }] })).toBe(false);
 });
 
 test("D15 目标：应能识别非首条文本中的 slash command", () => {
-  const e = engine as unknown as AnyEngine;
-  const isSlash = e.channel.isSlashCommand.bind(e.channel);
+  const c = channel as unknown as AnyChannel;
+  const isSlash = c.isSlashCommand.bind(c);
   const msg = {
     item_list: [
       { type: MessageItemType.IMAGE, image_item: {} },
@@ -264,34 +272,34 @@ test("D15 目标：应能识别非首条文本中的 slash command", () => {
 // ---------------------------------------------------------------------------
 
 test("D16 目标：contextToken 变化后应重新获取 typing ticket", async () => {
-  await engine.initSingleUser();
+  await channel.initSession();
   outboundMock.getTypingTicket.mockResolvedValue("T1");
 
-  const t1 = await engine.getTypingTicket();
+  const t1 = await channel.getTypingTicket();
   expect(t1).toBe("T1");
 
-  (engine as unknown as AnyEngine).channel.state.contextToken = "CTX-NEW";
+  (channel as unknown as AnyChannel).state.contextToken = "CTX-NEW";
   outboundMock.getTypingTicket.mockResolvedValue("T2");
 
-  const t2 = await engine.getTypingTicket();
+  const t2 = await channel.getTypingTicket();
   expect(t2).toBe("T2");
   expect(outboundMock.getTypingTicket).toHaveBeenCalledTimes(2);
 });
 
 test("D16 目标：ticket 缓存 60s TTL 内命中、过期后重新获取", async () => {
-  await engine.initSingleUser();
+  await channel.initSession();
   outboundMock.getTypingTicket.mockResolvedValue("T1");
 
-  expect(await engine.getTypingTicket()).toBe("T1");
+  expect(await channel.getTypingTicket()).toBe("T1");
   // TTL 内命中缓存
-  expect(await engine.getTypingTicket()).toBe("T1");
+  expect(await channel.getTypingTicket()).toBe("T1");
   expect(outboundMock.getTypingTicket).toHaveBeenCalledTimes(1);
 
   const realNow = Date.now;
   Date.now = () => realNow() + 61_000;
   try {
     outboundMock.getTypingTicket.mockResolvedValue("T2");
-    expect(await engine.getTypingTicket()).toBe("T2");
+    expect(await channel.getTypingTicket()).toBe("T2");
   } finally {
     Date.now = realNow;
   }
@@ -299,19 +307,19 @@ test("D16 目标：ticket 缓存 60s TTL 内命中、过期后重新获取", asy
 });
 
 test("D16 目标：sendTyping 报错含 'ticket' 时清空缓存并重新获取", async () => {
-  await engine.initSingleUser();
+  await channel.initSession();
   outboundMock.getTypingTicket.mockResolvedValue("T1");
 
-  await engine.sendTypingStatus(1);
+  await channel.sendTypingStatus(1);
   expect(outboundMock.sendTyping).toHaveBeenCalledWith(1, "T1");
 
   // 发送报错含 "ticket" → 清空缓存
   outboundMock.sendTyping.mockRejectedValueOnce(new Error("invalid typing_ticket"));
-  await engine.sendTypingStatus(1);
+  await channel.sendTypingStatus(1);
 
   // 缓存已清 → 下一次 getTypingTicket 重新取
   outboundMock.getTypingTicket.mockResolvedValue("T2");
-  expect(await engine.getTypingTicket()).toBe("T2");
+  expect(await channel.getTypingTicket()).toBe("T2");
   expect(outboundMock.getTypingTicket).toHaveBeenCalledTimes(2);
 });
 
@@ -327,28 +335,28 @@ test("D16b 目标：typing keepalive 的 interval 应调用 unref", async () => 
   globalThis.clearInterval = (() => {}) as unknown as typeof clearInterval;
 
   try {
-    await engine.initSingleUser();
-    await engine.startTypingKeepalive();
+    await channel.initSession();
+    await channel.startTyping();
     expect(unref).toHaveBeenCalled();
   } finally {
     globalThis.setInterval = origSet;
     globalThis.clearInterval = origClear;
-    await engine.stopTypingKeepalive();
+    await channel.stopTyping();
   }
 });
 
 // ---------------------------------------------------------------------------
-// D7：队列排空时 execute 的 rejection 未被引擎 await/catch
+// D7：队列排空时 execute 的 rejection 未被通道 await/catch
 // ---------------------------------------------------------------------------
 
 /**
  * 说明：Bun test 会把「未处理的 Promise rejection」直接判为用例失败，因此这里
- * 用一层包装把原始 rejection catch 下来用于观测，证明「引擎自身没有处理它」。
+ * 用一层包装把原始 rejection catch 下来用于观测，证明「通道自身没有处理它」。
  * 这样既能量化缺陷，又不会污染全局 runner。
  */
 function wrapTriggerToObserveRejection(captured: unknown[]): () => void {
-  const e = engine as unknown as AnyEngine;
-  const router = e.channel.router as { execute: (msg: unknown, requestId: string, o: unknown) => Promise<void> };
+  const c = channel as unknown as AnyChannel;
+  const router = c.router as { execute: (msg: unknown, requestId: string, o: unknown) => Promise<void> };
   const original = router.execute.bind(router);
   router.execute = (msg: unknown, requestId: string, o: unknown) => {
     const p = original(msg, requestId, o) as Promise<void>;
@@ -360,52 +368,49 @@ function wrapTriggerToObserveRejection(captured: unknown[]): () => void {
   };
 }
 
-test("D7 目标：队列排空时 rejecting turn 应由引擎处理并释放状态", async () => {
-  await engine.initSingleUser();
-  const e = engine as unknown as AnyEngine;
+test("D7 目标：队列排空时 rejecting turn 应由通道处理并释放状态", async () => {
+  await channel.initSession();
+  const c = channel as unknown as AnyChannel;
 
   const captured: unknown[] = [];
   const restore = wrapTriggerToObserveRejection(captured);
   try {
-    e.channel.queue.setBusy(true);
-    await engine.triggerAi(textMessage("queued"), "R-queued", opts);
+    c.queue.setBusy(true);
+    await channel.triggerAi(textMessage("queued"), "R-queued", opts);
 
     pi.sendUserMessage.mockImplementation(() => {
       throw new Error("boom");
     });
 
-    engine.onAiDone();
+    channel.onAiDone();
     await sleep(80);
 
-    expect(e.channel.queue.isBusy()).toBe(false);
+    expect(c.queue.isBusy()).toBe(false);
   } finally {
     restore();
   }
 });
 
 // ---------------------------------------------------------------------------
-// C9：实例级依赖注入，不依赖模块单例状态
+// C9：两个 Channel 实例互不污染
 // ---------------------------------------------------------------------------
 
-test("C9 目标：createWechatEngine 独立实例注入 fake host/config，不污染模块单例", async () => {
-  const isolatedPi = createEnginePi();
-  const isolated = createWechatEngine({
+test("C9 目标：两个 Channel 实例各自注入 fake host/config，互不污染", async () => {
+  const isolatedPi = createChannelPi();
+  const isolated = makeChannel({
     host: isolatedPi,
     config: { baseUrl: opts.baseUrl, token: opts.token },
-    inbound: inboundMock as never,
-    outbound: outboundMock as never,
-    media: mediaMock as never,
   });
 
   await isolated.triggerAi(textMessage("isolated hello"), "R-iso", opts);
 
-  // fake host 收到调用（走实例自身的 host，而非模块级 pi）
+  // fake host 收到调用（走实例自身的 host，而非 beforeEach 的实例）
   expect(isolatedPi.calls.appendEntry[0][0]).toBe("wechat_meta");
   expect(isolatedPi.calls.appendEntry[0][1]).toEqual({ requestId: "R-iso" });
   expect(isolatedPi.calls.sendUserMessage.length).toBe(1);
   expect(String(isolatedPi.calls.sendUserMessage[0][0])).toBe("isolated hello");
 
-  // 模块单例状态完全不受影响
+  // 另一个 Channel 实例状态完全不受影响
   expect(pi.calls.appendEntry.length).toBe(0);
   expect(pi.calls.sendUserMessage.length).toBe(0);
 });
@@ -415,11 +420,8 @@ test("C9 目标：createWechatEngine 独立实例注入 fake host/config，不�
 // ---------------------------------------------------------------------------
 
 test("B4 目标：needs_relogin 时通知用户执行 /wechat login", async () => {
-  const isolated = createWechatEngine({
+  const isolated = makeChannel({
     config: { baseUrl: opts.baseUrl, token: opts.token },
-    inbound: inboundMock as never,
-    outbound: outboundMock as never,
-    media: mediaMock as never,
   });
   const notify = mock((_message: string, _type?: string) => {});
   isolated.setNotifier(notify);
@@ -441,23 +443,23 @@ test("B4 目标：needs_relogin 时通知用户执行 /wechat login", async () =
 // ---------------------------------------------------------------------------
 
 test("B6 目标：终端处理期间连发消息按序排队，排空后 requestId/content 一一对应且不丢", async () => {
-  await engine.initSingleUser();
-  engine.setHost(pi as never);
+  await channel.initSession();
+  channel.setHost(pi as never);
 
   // 模拟 pi 正在处理终端消息：此时所有新消息只能入队
-  engine.setTerminalProcessing(true);
+  channel.setTerminalProcessing(true);
 
-  await engine.triggerAi(textMessage("m1"), "r1", opts);
-  await engine.triggerAi(textMessage("m2"), "r2", opts);
-  await engine.triggerAi(textMessage("m3"), "r3", opts);
+  await channel.triggerAi(textMessage("m1"), "r1", opts);
+  await channel.triggerAi(textMessage("m2"), "r2", opts);
+  await channel.triggerAi(textMessage("m3"), "r3", opts);
 
-  const e = engine as unknown as AnyEngine;
-  expect(e.channel.queue.size).toBe(3);
+  const c = channel as unknown as AnyChannel;
+  expect(c.queue.size).toBe(3);
 
   // 终端处理结束，逐轮通知完成并排空队列
-  engine.setTerminalProcessing(false);
+  channel.setTerminalProcessing(false);
   for (let i = 0; i < 3; i++) {
-    engine.onAiDone();
+    channel.onAiDone();
     await sleep(60);
   }
 
@@ -468,7 +470,7 @@ test("B6 目标：终端处理期间连发消息按序排队，排空后 request
 
   expect(requestIds).toEqual(["r1", "r2", "r3"]);
   expect(contents).toEqual(["m1", "m2", "m3"]);
-  expect(e.channel.queue.size).toBe(0);
+  expect(c.queue.size).toBe(0);
 });
 
 // ---------------------------------------------------------------------------
@@ -480,8 +482,8 @@ function mediaMessage(contextToken = "CTX-1") {
 }
 
 test("B5 目标：媒体消息立即 ack（不含路径），下载未完成不写 history", async () => {
-  await engine.initSingleUser();
-  engine.setHost(pi as never);
+  await channel.initSession();
+  channel.setHost(pi as never);
 
   let release!: (v: unknown) => void;
   const gate = new Promise<unknown>((res) => {
@@ -492,7 +494,7 @@ test("B5 目标：媒体消息立即 ack（不含路径），下载未完成不�
     return { path: "/tmp/media/2601/pic.png" };
   });
 
-  await engine.handleMessage(mediaMessage(), opts);
+  await channel.handleMessage(mediaMessage(), opts);
 
   // ack 已发出，且不含保存路径
   expect(outboundMock.sendText).toHaveBeenCalledTimes(1);
@@ -502,7 +504,7 @@ test("B5 目标：媒体消息立即 ack（不含路径），下载未完成不�
 
   // 下载尚未完成：history 未写，且未占用 AI 忙闲标记（不阻塞轮询）
   expect(pi.calls.sendMessage.length).toBe(0);
-  expect((engine as unknown as AnyEngine).channel.queue.isBusy()).toBe(false);
+  expect((channel as unknown as AnyChannel).queue.isBusy()).toBe(false);
 
   release(undefined);
   await waitFor(() => pi.calls.sendMessage.length > 0);
@@ -519,16 +521,16 @@ test("B5 目标：媒体消息立即 ack（不含路径），下载未完成不�
 });
 
 test("B5 目标：后台媒体任务串行，第 2 条等第 1 条 resolve 后才启动", async () => {
-  await engine.initSingleUser();
-  engine.setHost(pi as never);
+  await channel.initSession();
+  channel.setHost(pi as never);
 
   const resolvers: Array<(v: unknown) => void> = [];
   mediaMock.download.mockImplementation(
     () => new Promise((res) => resolvers.push(res)),
   );
 
-  await engine.handleMessage(mediaMessage(), opts);
-  await engine.handleMessage(mediaMessage(), opts);
+  await channel.handleMessage(mediaMessage(), opts);
+  await channel.handleMessage(mediaMessage(), opts);
 
   // 第 2 条下载尚未启动（串行）
   expect(mediaMock.download).toHaveBeenCalledTimes(1);

@@ -1,11 +1,12 @@
 /**
- * tests/setup/engine-harness.ts
+ * tests/setup/channel-harness.ts
  *
- * L2 引擎层夹具：
+ * L2 通道层夹具：
  * - 只安装与微信无关的基础 mock（pi SDK / typebox / util/logger），
  *   不再对任何 vendor 路径做模块级替换。
  * - 暴露可控的端口 fake（inbound/outbound/media）与便捷的凭证 seed / fake pi。
- * - 测试通过 `createWechatEngine({ inbound, outbound, media })` 注入 fake ports。
+ * - 测试通过 `new Channel({ host, config, ports: { inbound, outbound, media } })`
+ *   注入 fake ports（见 tests/channel/channel.test.ts 的 makeChannel）。
  *
  * 不读、不改底层模块实现；fake 只在测试运行时生效。
  */
@@ -50,15 +51,15 @@ export function resetPortMocks(): void {
   mediaMock.download.mockImplementation(async () => null);
 }
 
-/** 安装基础 mock。保留旧名以兼容测试调用；不再 mock 任何 vendor 路径。 */
-export function installEngineMocks(): void {
+/** 安装基础 mock（在首次 import 被测源码前调用）。 */
+export function installChannelMocks(): void {
   installBaseMocks();
 }
 
 // ---- 被测模块 / 依赖加载 --------------------------------------------------
 
-export async function importEngine() {
-  return await import("../../src/engine/wechat.js");
+export async function importChannel() {
+  return await import("../../src/channel/channel.js");
 }
 
 export async function importStorage() {
@@ -71,7 +72,7 @@ export async function importConfig() {
 
 // ---- fake pi --------------------------------------------------------------
 
-export interface EnginePi {
+export interface ChannelPi {
   calls: {
     appendEntry: Array<[string, unknown]>;
     sendUserMessage: Array<[unknown, unknown]>;
@@ -82,8 +83,8 @@ export interface EnginePi {
   sendMessage: ReturnType<typeof mock>;
 }
 
-export function createEnginePi(): EnginePi {
-  const calls: EnginePi["calls"] = { appendEntry: [], sendUserMessage: [], sendMessage: [] };
+export function createChannelPi(): ChannelPi {
+  const calls: ChannelPi["calls"] = { appendEntry: [], sendUserMessage: [], sendMessage: [] };
   return {
     calls,
     appendEntry: mock((type: string, data: unknown) => {

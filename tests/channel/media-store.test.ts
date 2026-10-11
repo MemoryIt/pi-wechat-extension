@@ -1,5 +1,5 @@
 /**
- * tests/engine/media-store.test.ts
+ * tests/channel/media-store.test.ts
  *
  * media-store.ts 单测（真实 MediaStore + 注入的 WechatMedia 端口 fake + 临时目录）：
  * - save 扩展名优先级（originalFilename > contentType > 魔数 > bin）
