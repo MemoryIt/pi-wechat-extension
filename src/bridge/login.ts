@@ -6,7 +6,8 @@
  */
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "../../auth/login-qr.js";
+import { createWechatAuth } from "../adapters/auth.js";
+import type { WechatAuth } from "../ports/auth.js";
 import { saveToken, upsertAccount } from "../storage/state.js";
 import { setConfig } from "../engine/wechat.js";
 import type { WechatEngine } from "../engine/wechat.js";
@@ -16,11 +17,14 @@ import { createLogger } from "../shared/logger.js";
 
 const logger = createLogger({ isDebugEnabled: () => isDebugEnabled() });
 
-export async function performWechatLogin(ctx: ExtensionCommandContext, engine: WechatEngine): Promise<void> {
+export async function performWechatLogin(
+  ctx: ExtensionCommandContext,
+  engine: WechatEngine,
+  auth: WechatAuth = createWechatAuth(),
+): Promise<void> {
   try {
-    const startResult = await startWeixinLoginWithQr({
+    const startResult = await auth.startQr({
       apiBaseUrl: "https://ilinkai.weixin.qq.com",
-      botType: DEFAULT_ILINK_BOT_TYPE,
       verbose: true,
     });
 
@@ -44,12 +48,11 @@ export async function performWechatLogin(ctx: ExtensionCommandContext, engine: W
       console.log(startResult.qrcodeUrl);
     }
 
-    const loginResult = await waitForWeixinLogin({
+    const loginResult = await auth.waitForLogin({
       sessionKey: startResult.sessionKey,
       apiBaseUrl: "https://ilinkai.weixin.qq.com",
       timeoutMs: 480_000,
       verbose: true,
-      botType: DEFAULT_ILINK_BOT_TYPE,
     });
 
     if (loginResult.connected) {
