@@ -1,0 +1,68 @@
+@startuml
+' ============================================================================
+' C4 Level 3 - Component (Engine 子系统展开)
+' 范围：展开 03-components.puml 中的 Engine Component
+'
+' 事实来源：docs/ARCHITECTURE.md
+' 定位：实用 drill-down（Engine 是本项目最复杂的子系统）。
+'       仅保留 Engine 直接交互的适配层入口与 Storage / Shared。
+' 抽象：Engine 在此图中为 scope/边界，其 7 个模块为 Components。
+' ============================================================================
+
+!include <C4/C4_Component>
+!include _styles.puml
+
+title Component Diagram — Engine 子系统（展开 03-components.puml 中的 Engine）
+
+' --- Engine 内部 7 个模块 -------------------------------------------------
+Container_Boundary(engine, "Engine（src/engine/）") {
+  Component(wechat, "wechat", "门面", "状态 / 凭证 / 队列排空 / 工厂与单例", $tags="self")
+  Component(polling, "polling", "长轮询", "退避 / abort-race / 重入守卫 / generation 令牌", $tags="self")
+  Component(queue, "queue", "队列", "轮次 FIFO / 去重 + 后台串行任务（纯状态）", $tags="self")
+  Component(router, "router", "路由", "turn 执行（文本注入 / 媒体后台）+ 队列排空", $tags="self")
+  Component(mediaStore, "media-store", "媒体", "落盘 / ISO 周目录 / 魔数识别 / 批量下载", $tags="self")
+  Component(typing, "typing", "typing", "ticket 缓存（绑定 contextToken）+ keepalive", $tags="self")
+  Component(sender, "sender", "发送", "文本 / 文件出站 + 重试", $tags="self")
+}
+
+' --- 直接交互的适配层入口 -------------------------------------------------
+Container_Boundary(adapter, "WeChat Adapter（第三方，仅直接调用入口）") {
+  Component(api, "api", "适配", "getUpdates / getConfig / sendTyping", $tags="thirdparty")
+  Component(messaging, "messaging", "适配", "sendMessageWeixin / sendWeixinMediaFile", $tags="thirdparty")
+  Component(media, "media", "适配", "downloadMediaFromItem", $tags="thirdparty")
+}
+
+' --- 直接依赖的外部层 -----------------------------------------------------
+Component(storage, "Storage", "持久化", "凭证 / cursor / context token", $tags="self")
+Component(shared, "Shared", "基础", "config / logger / time / types", $tags="self")
+
+' --- 关系（Engine 内部）--------------------------------------------------
+Rel(wechat, polling, "使用", $tags="allowed")
+Rel(wechat, router, "使用", $tags="allowed")
+Rel(wechat, queue, "使用", $tags="allowed")
+Rel(wechat, sender, "使用", $tags="allowed")
+Rel(wechat, typing, "使用", $tags="allowed")
+Rel(wechat, mediaStore, "使用", $tags="allowed")
+Rel(router, queue, "使用", $tags="allowed")
+Rel(router, mediaStore, "使用", $tags="allowed")
+Rel(router, sender, "使用", $tags="allowed")
+
+' --- 关系（Engine → 适配层）---------------------------------------------
+Rel(polling, api, "调用 getUpdates", $tags="allowed")
+Rel(typing, api, "调用 getConfig / sendTyping", $tags="allowed")
+Rel(mediaStore, media, "调用 downloadMediaFromItem", $tags="allowed")
+Rel(sender, messaging, "调用 sendMessageWeixin / sendWeixinMediaFile", $tags="allowed")
+
+' --- 关系（Engine → Storage / Shared）-----------------------------------
+Rel(wechat, storage, "读写凭证 / cursor", $tags="allowed")
+Rel(wechat, shared, "配置 / 日志 / 时间", $tags="allowed")
+
+note as ScopeNote
+  本图展开 **03-components.puml** 中的 Engine Component。
+  仅保留 Engine 直接交互的适配层入口（api / messaging / media）与 Storage / Shared；
+  用户、微信 App、本地目录、完整 pi API 不在此图重复。
+  其余 Engine 模块也各自使用 Shared（time / logger / config / types）。
+end note
+
+SHOW_LEGEND()
+@enduml
