@@ -1,0 +1,363 @@
+@startuml
+' ============================================================================
+' L4 Code - Channel 类图（PlantUML 原生 class 图，非 C4 宏）
+' 范围：src/channel/ 的编排器 + 状态 + 协作类 + 端口接口 + 注入 deps
+'
+' 事实来源：src/channel/*.ts、src/ports/*.ts、docs/ARCHITECTURE.md
+' 约定：
+'   *--  组合（Channel 构造并持有）
+'   ..>  依赖 / 引用（构造注入或调用）
+'   <<orchestrator>> / <<state>> / <<collaborator>> / <<port>> / <<deps>> / <<module>>
+' ============================================================================
+
+skinparam classAttributeIconSize 0
+hide empty members
+
+title Class Diagram — Channel (src/channel/)
+
+' ============ 编排器 + 状态 + 协作类 ============
+package "src/channel（编排器 + 状态 + 协作类）" {
+
+  class Channel <<orchestrator>> {
+    - state : ChannelState
+    - logger : PluginLogger
+    - sleep : (ms) => Promise<void>
+    - poller : PollingLoop
+    - queue : TurnQueue
+    - mediaStore : MediaStore
+    - mediaQueue : SerialTaskQueue
+    - typing : TypingController
+    - sender : MessageSender
+    - router : MessageRouter
+    --
+    + connectionState : ConnectionState
+    + setHost(host : PiHost)
+    + setNotifier(notifier : Notifier)
+    + setConfig(config : WechatApiOpts)
+    + configure(deps)
+    + getTerminalProcessing() : boolean
+    + setTerminalProcessing(value)
+    + initSession() : Promise<boolean>
+    + stopPolling()
+    + startPolling(opts : WechatApiOpts) : Promise<void>
+    + handleMessage(msg, opts) : Promise<void>
+    + triggerAi(msg, requestId, opts) : Promise<void>
+    + onAiDone()
+    + getTypingTicket() : Promise<string | null>
+    + sendTypingStatus(status)
+    + startTyping() : Promise<void>
+    + stopTyping() : Promise<void>
+    + sendText(text) : Promise<void>
+    + sendFile(localPath) : Promise<void>
+    + sendReply(text, maxRetries) : Promise<void>
+    + getCurrentRequestId() : string | null
+    + isRequestProcessed(id) : boolean
+    + markRequestProcessed(id)
+    + cleanupProcessedRequests()
+    + reset()
+    - generateRequestId() : string
+    - getCredentials() : WechatCredentials | null
+    - getCurrentOpts() : WechatApiOpts | null
+    - isSlashCommand(msg) : boolean
+    - extractText(msg) : string
+    - handleSlashCommand(msg, opts) : Promise<void>
+  }
+
+  class ChannelState <<state>> {
+    + accountId : string | null
+    + userId : string | null
+    + contextToken : string | null
+    + config : WechatApiOpts | null
+    + host : PiHost | null
+    + notifier : Notifier | null
+    + isTerminalMessageProcessing : boolean
+    + lastRequestIdMs : number
+    + requestIdSeq : number
+    --
+    + resetSession()
+  }
+
+  class PollingLoop <<collaborator>> {
+    - deps : PollingLoopDeps
+    - state : syncCursor + connectionState
+    - abortController : AbortController
+    - consecutiveFailures : number
+    - pollingActive : boolean
+    - pollingGeneration : number
+    --
+    + connectionState : ConnectionState
+    + start(opts : WechatApiOpts) : Promise<void>
+    + stop()
+    + reset()
+    - createAbortWaiter(signal)
+  }
+
+  class "TurnQueue<T>" as TurnQueue <<collaborator>> {
+    - pending : T[]
+    - busy : boolean
+    - currentRequestId : string | null
+    - processed : Map<string, number>
+    - cleanupCounter : number
+    --
+    + size : number
+    + isBusy() : boolean
+    + setBusy(value)
+    + getCurrentRequestId() : string | null
+    + setCurrentRequestId(id)
+    + enqueue(item)
+    + dequeue() : T | undefined
+    + isRequestProcessed(id) : boolean
+    + markRequestProcessed(id)
+    + cleanupProcessedRequests()
+    + reset()
+  }
+
+  class SerialTaskQueue <<collaborator>> {
+    - tail : Promise<void>
+    - pending : number
+    - onError : (err) => void
+    --
+    + enqueue(task : () => Promise<void>)
+    + idle : boolean
+  }
+
+  class MessageRouter <<collaborator>> {
+    - deps : RouterDeps
+    --
+    + execute(msg, requestId, opts) : Promise<void>
+    + drain() : Promise<void>
+    - processMediaInBackground(msg, requestId, opts) : Promise<void>
+  }
+
+  class MediaStore <<collaborator>> {
+    - getBasePath : () => string
+    - media : WechatMedia
+    - log / errLog
+    --
+    + save(buffer, contentType?, originalFilename?) : string
+    + createSaveCallback() : SaveMediaFn
+    + downloadAll(items, cdnBaseUrl, labelPrefix?) : Promise<string[]>
+  }
+
+  class TypingController <<collaborator>> {
+    - deps : TypingDeps
+    - typingTicketCache
+    - typingKeepaliveTimer
+    --
+    + getTicket() : Promise<string | null>
+    + sendStatus(status : 1 | 2) : Promise<void>
+    + startKeepalive() : Promise<void>
+    + stopKeepalive() : Promise<void>
+    + invalidateTicket()
+    + reset()
+  }
+
+  class MessageSender <<collaborator>> {
+    - deps : SenderDeps
+    --
+    + sendText(text) : Promise<void>
+    + sendFile(localPath) : Promise<void>
+    + sendWithRetry(text, maxRetries?) : Promise<void>
+  }
+
+  enum ConnectionState {
+    disconnected
+    connecting
+    connected
+    error
+    needs_relogin
+  }
+
+  class "Notifier" as Notifier <<type>> {
+    (message, type?) => void
+  }
+}
+
+' ============ 端口接口 ============
+package "Ports（src/ports/）" {
+  interface WechatInbound <<port>> {
+    + getUpdates(params) : Promise<WechatInboundGetUpdatesResult>
+  }
+  interface WechatOutbound <<port>> {
+    + sendText(text) : Promise<void>
+    + sendFile(localPath) : Promise<void>
+    + sendTyping(status, ticket) : Promise<void>
+    + getTypingTicket() : Promise<string | null>
+  }
+  interface WechatMedia <<port>> {
+    + download(item, deps) : Promise<WechatMediaDownloadResult | null>
+  }
+  interface WechatAuth <<port>> {
+    + startQr(opts) : Promise<WechatAuthStartQrResult>
+    + waitForLogin(opts) : Promise<WechatAuthWaitForLoginResult>
+  }
+  interface PiHost <<port>> {
+    + appendEntry(customType, data)
+    + sendUserMessage(content, options)
+    + sendMessage(message, options)
+  }
+}
+
+' ============ 注入 deps / 类型 ============
+package "注入 deps / 类型" {
+  interface ChannelDeps <<deps>> {
+    + state? : ChannelState
+    + host? : PiHost
+    + config? : WechatApiOpts
+    + notifier? : Notifier
+    + ports? : ChannelPorts
+    + logger? : PluginLogger
+    + sleep? : (ms) => Promise<void>
+  }
+  interface ChannelPorts <<deps>> {
+    + inbound? : WechatInbound
+    + outbound? : WechatOutbound
+    + media? : WechatMedia
+  }
+  interface PollingLoopDeps <<deps>> {
+    + ensureSession() : Promise<boolean>
+    + getAccountId() : string | null
+    + loadCursor(accountId) : Promise<string | null>
+    + saveCursor(accountId, cursor) : Promise<void>
+    + inbound : WechatInbound
+    + onMessage(msg, opts) : Promise<void>
+    + onNeedsRelogin()
+    + debug / error
+    + sleep(ms) : Promise<void>
+  }
+  interface RouterDeps <<deps>> {
+    + queue : TurnQueue
+    + mediaStore : MediaStore
+    + mediaQueue : SerialTaskQueue
+    + sender : MessageSender
+    + getHost() : PiHost | null
+    + getOpts() : WechatApiOpts | null
+    + logger : PluginLogger
+  }
+  interface TypingDeps <<deps>> {
+    + outbound : WechatOutbound
+    + getContextToken() : string | null
+    + debug / error
+  }
+  interface SenderDeps <<deps>> {
+    + outbound : WechatOutbound
+    + canSend() : boolean
+    + debug / error
+  }
+  interface MediaStoreOptions <<deps>> {
+    + getBasePath? : () => string
+    + media? : WechatMedia
+    + log? / errLog?
+  }
+  class SaveMediaFn <<type>> {
+    (buffer, contentType?, originalFilename?) => Promise<WechatMediaDownloadResult>
+  }
+  class WechatCredentials <<type>> {
+    + baseUrl : string
+    + token : string
+    + userId : string
+    + contextToken : string
+  }
+  class WechatApiOpts <<type>> {
+    + baseUrl : string
+    + token : string
+  }
+}
+
+' ============ 外部依赖 ============
+package "外部依赖" {
+  class "storage/state" as storage <<module>> {
+    + getSingleUserCredentials()
+    + getDefaultAccountToken()
+    + getSingleUserContextToken()
+    + saveContextToken()
+    + loadSyncCursor / saveSyncCursor
+  }
+  class "shared" as shared <<module>> {
+    config / logger / time / types
+  }
+  class "adapters（默认工厂）" as adapters <<module>> {
+    createWechatInbound / createWechatOutbound / createWechatMedia / createWechatAuth
+  }
+}
+
+' ============ 组合（Channel 构造并持有）============
+Channel *-- ChannelState : state
+Channel *-- PollingLoop : poller
+Channel *-- TurnQueue : queue
+Channel *-- SerialTaskQueue : mediaQueue
+Channel *-- MediaStore : mediaStore
+Channel *-- TypingController : typing
+Channel *-- MessageSender : sender
+Channel *-- MessageRouter : router
+
+' ============ 构造注入 ============
+Channel ..> ChannelDeps : constructor(deps)
+ChannelDeps ..> ChannelPorts
+ChannelDeps ..> ChannelState
+ChannelDeps ..> Notifier
+ChannelDeps ..> WechatApiOpts
+ChannelDeps ..> PiHost
+
+' ============ 协作类 → deps → 端口 ============
+PollingLoop ..> PollingLoopDeps : deps
+PollingLoopDeps ..> WechatInbound
+PollingLoopDeps ..> WechatApiOpts
+PollingLoop ..> ConnectionState : returns
+
+MessageRouter ..> RouterDeps : deps
+RouterDeps ..> TurnQueue
+RouterDeps ..> MediaStore
+RouterDeps ..> SerialTaskQueue
+RouterDeps ..> MessageSender
+RouterDeps ..> PiHost
+RouterDeps ..> WechatApiOpts
+
+TypingController ..> TypingDeps : deps
+TypingDeps ..> WechatOutbound
+
+MessageSender ..> SenderDeps : deps
+SenderDeps ..> WechatOutbound
+
+MediaStore ..> MediaStoreOptions : opts
+MediaStoreOptions ..> WechatMedia
+MediaStore ..> SaveMediaFn
+MediaStore ..> WechatMedia : downloadAll
+
+ChannelPorts ..> WechatInbound
+ChannelPorts ..> WechatOutbound
+ChannelPorts ..> WechatMedia
+
+' ============ 默认 adapters 实现端口 ============
+adapters ..> WechatInbound : 实现
+adapters ..> WechatOutbound : 实现
+adapters ..> WechatMedia : 实现
+adapters ..> WechatAuth : 实现
+
+' ============ Channel → 外部依赖 ============
+Channel ..> PiHost : setHost / state.host
+Channel ..> storage
+Channel ..> shared
+Channel ..> adapters : 缺省构造（组合根职责，待迁 index）
+Channel ..> WechatCredentials : getCredentials / getOpts
+
+' ============ 说明 ============
+note right of Channel
+  编排器 / 组合根（临时）：
+  - 构造时创建全部协作类（组合关系）
+  - 只依赖 PiHost / WechatInbound / WechatOutbound / WechatMedia 端口
+  - 未注入 ports 时构造默认 adapters（待迁 index）
+  - 无模块级单例；createExtension() 每次新建独立实例
+end note
+
+note bottom of RouterDeps
+  MessageRouter 仅通过 RouterDeps 依赖窄接口，
+  不直接持有 Channel，因此可独立单测。
+end note
+
+note bottom of WechatAuth
+  WechatAuth 不由 Channel 使用：
+  index 构造 createWechatAuth() 并交给 bridge（login）。
+end note
+
+@enduml

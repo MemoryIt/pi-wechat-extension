@@ -1,0 +1,76 @@
+@startuml
+' ============================================================================
+' C4 Level 3 - Component (Channel 子系统展开)
+' 范围：展开 03-components.puml 中的 Channel Component
+'
+' 事实来源：src/channel/*.ts、src/ports/*.ts、docs/ARCHITECTURE.md
+' 定位：实用 drill-down（Channel 是本项目最复杂的子系统）。
+'       保留 Channel 直接交互的端口与 Storage / Shared；
+'       vendor、pi API 细节不在此图重复。
+' 抽象：Channel 在此图中为 scope/边界，其编排器 + 状态 + 协作类为 Components。
+' ============================================================================
+
+!include <C4/C4_Component>
+!include _styles.puml
+
+title Component Diagram — Channel 子系统（展开 03-components.puml 中的 Channel）
+
+' --- Channel 内部：编排器 + 状态 + 协作类 ---------------------------------
+Container_Boundary(channel, "Channel（src/channel/）") {
+  Component(channelCore, "channel", "编排器", "Channel：生命周期 / 消息编排 / 排空 / requestId 生成", $tags="self")
+  Component(state, "state", "状态", "ChannelState：单用户凭证 / 注入依赖 / 终端标志 / requestId 追踪", $tags="self")
+  Component(polling, "polling", "长轮询", "退避 / abort-race / 重入守卫 / generation 令牌", $tags="self")
+  Component(queue, "queue", "队列", "TurnQueue FIFO / 去重 + SerialTaskQueue 后台串行（纯状态）", $tags="self")
+  Component(router, "router", "路由", "turn 执行（文本注入 / 媒体后台）+ 队列排空", $tags="self")
+  Component(mediaStore, "media-store", "媒体", "落盘 / ISO 周目录 / 魔数识别 / 批量下载", $tags="self")
+  Component(typing, "typing", "typing", "ticket 缓存（绑定 contextToken）+ keepalive", $tags="self")
+  Component(sender, "sender", "发送", "文本 / 文件出站 + 重试", $tags="self")
+}
+
+' --- Channel 依赖的端口（由 adapters 实现）--------------------------------
+Container_Boundary(ports, "Ports（src/ports/，由 adapters 实现）") {
+  Component(inbound, "WechatInbound", "端口", "getUpdates", $tags="self")
+  Component(outbound, "WechatOutbound", "端口", "sendText / sendFile / sendTyping / getTypingTicket", $tags="self")
+  Component(media, "WechatMedia", "端口", "download(item, deps)", $tags="self")
+  Component(piHost, "PiHost", "端口", "appendEntry / sendUserMessage / sendMessage", $tags="self")
+}
+
+' --- 直接依赖的外部层 -----------------------------------------------------
+Component(storage, "Storage", "持久化", "凭证 / context token / sync cursor", $tags="self")
+Component(shared, "Shared", "基础", "config / logger / time / types", $tags="self")
+
+' --- 关系（Channel 内部）--------------------------------------------------
+Rel(channelCore, state, "持有 / 读写", $tags="allowed")
+Rel(channelCore, polling, "构造 / 持有", $tags="allowed")
+Rel(channelCore, queue, "构造 / 持有", $tags="allowed")
+Rel(channelCore, router, "构造 / 持有", $tags="allowed")
+Rel(channelCore, mediaStore, "构造 / 持有", $tags="allowed")
+Rel(channelCore, typing, "构造 / 持有", $tags="allowed")
+Rel(channelCore, sender, "构造 / 持有", $tags="allowed")
+Rel(router, queue, "使用", $tags="allowed")
+Rel(router, mediaStore, "使用", $tags="allowed")
+Rel(router, sender, "使用", $tags="allowed")
+
+' --- 关系（Channel / 协作类 → 端口）--------------------------------------
+Rel(polling, inbound, "getUpdates", $tags="allowed")
+Rel(typing, outbound, "getTypingTicket / sendTyping", $tags="allowed")
+Rel(sender, outbound, "sendText / sendFile", $tags="allowed")
+Rel(mediaStore, media, "download", $tags="allowed")
+Rel(router, piHost, "appendEntry / sendUserMessage / sendMessage", $tags="allowed")
+
+' --- 关系（Channel → Storage / Shared）-----------------------------------
+Rel(channelCore, storage, "凭证 / cursor / context token", $tags="allowed")
+Rel(channelCore, shared, "配置 / 日志 / 时间 / 类型", $tags="allowed")
+
+note as ScopeNote
+  本图展开 **03-components.puml** 中的 Channel Component。
+  - 端口仅列 Channel 直接使用的 **WechatInbound / WechatOutbound / WechatMedia / PiHost**；
+    `WechatAuth` 由 bridge / index 使用，不在此图。
+  - `channel.ts` 当前在缺省时 `createWechatInbound/Outbound/Media` 构造默认实现
+    （组合根职责，待迁 index）；注入 fake 时协作类只依赖端口。
+  - 用户、微信 App / iLink、本地目录、完整 pi API 不在此图重复。
+  - 端口/适配器边界见 **03b-ports-adapters.puml**；类级细节见 **04-class-channel.puml**。
+end note
+
+SHOW_LEGEND()
+@enduml
