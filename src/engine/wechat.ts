@@ -133,6 +133,7 @@ export class WechatEngine {
     });
     this.sender = new MessageSender({
       outbound,
+      canSend: () => this.getCredentials() !== null,
       debug: this.logger.debug.bind(this.logger),
       error: this.logger.error.bind(this.logger),
     });

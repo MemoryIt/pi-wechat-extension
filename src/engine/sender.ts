@@ -15,6 +15,8 @@ import { sleep } from "../shared/time.js";
 
 export interface SenderDeps {
   outbound: WechatOutbound;
+  /** 凭证是否就绪；缺凭证时 sendWithRetry 入口立即报错，不进入重试。 */
+  canSend(): boolean;
   debug(message: string, ...args: unknown[]): void;
   error(message: string, ...args: unknown[]): void;
 }
@@ -56,8 +58,15 @@ export class MessageSender {
 
   /**
    * 发送消息到微信（带重试）
+   *
+   * 入口先检查凭证：缺凭证时立即抛 `"Single user not initialized"`，
+   * 不调用底层发送、不进入重试、不 sleep（与旧实现一致）。
    */
   async sendWithRetry(text: string, maxRetries: number = 3): Promise<void> {
+    if (!this.deps.canSend()) {
+      throw new Error("Single user not initialized");
+    }
+
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
