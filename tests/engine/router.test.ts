@@ -11,7 +11,7 @@ import type { RouterDeps, RouterTurnOptions } from "../../src/engine/router.js";
 import { MessageItemType } from "../../api/types.js";
 import type { WeixinMessage } from "../../api/types.js";
 import { createLogger } from "../../src/shared/logger.js";
-import type { WechatHost } from "../../src/engine/wechat.js";
+import type { PiHost } from "../../src/ports/pi-host.js";
 
 const opts: RouterTurnOptions = { baseUrl: "https://example.com", token: "tok" };
 
@@ -69,7 +69,7 @@ function makeHarness(overrides: Partial<Pick<RouterDeps, "getHost" | "getOpts">>
     mediaStore,
     mediaQueue,
     sender: sender as unknown as RouterDeps["sender"],
-    getHost: overrides.getHost ?? (() => host as unknown as WechatHost),
+    getHost: overrides.getHost ?? (() => host as unknown as PiHost),
     getOpts: overrides.getOpts ?? (() => opts),
     logger,
   });
