@@ -10,3 +10,14 @@
 
 export type { WeixinMessage, MessageItem } from "../../api/types.js";
 export { MessageItemType } from "../../api/types.js";
+
+/**
+ * 出站 adapter 所需的完整凭证（含单用户 contextToken）。
+ * 与 `engine/typing.ts` 的 `TypingCredentials` 字段对齐，作为 ports 层的公共类型。
+ */
+export interface WechatCredentials {
+  baseUrl: string;
+  token: string;
+  userId: string;
+  contextToken: string;
+}
