@@ -1,0 +1,56 @@
+@startuml
+' ============================================================================
+' C4 Level 2 - Deployment / Process
+' 系统：pi-wechat-extension
+'
+' 事实来源：docs/ARCHITECTURE.md
+' 说明：本图为部署/进程视图，回答「扩展跑在哪里」：
+'       它是 pi coding agent 进程内的扩展，而非独立进程/容器；
+'       凭证与媒体落在用户电脑的本地目录。
+'       插件内部结构见 03-components.puml。
+' 关系：本层刻意放大 01-context 中合并的 pi 整体，
+'       以便呈现进程内嵌与本地持久化。
+' ============================================================================
+
+!include <C4/C4_Deployment>
+!include <C4/C4_Component>
+' 若本地 PlantUML 未内置 C4 stdlib，可改用 raw 地址：
+' !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Deployment.puml
+
+title Deployment / Process — 插件在 pi 进程内
+
+' --- 角色（Person，唯一）-------------------------------------------------
+Person(user, "用户", "在 pi 终端绑定/管理微信账号；通过微信 App 与 AI 对话")
+
+' --- 外部系统（System_Ext）-----------------------------------------------
+System_Ext(wechatApp, "微信 App", "用户使用的微信客户端：收发消息、扫码确认登录")
+System_Ext(ilinkBackend, "微信 iLink 后端", "云端机器人后端 API：长轮询、发送、上传下载、typing、登录鉴权")
+
+' --- 用户电脑（部署节点）-------------------------------------------------
+Deployment_Node(computer, "用户电脑", "macOS / Linux / Windows") {
+
+  Container(piProc, "pi coding agent 进程", "Node.js ≥ 22", "宿主 agent 运行时") {
+    Component(plugin, "pi-wechat-extension", "进程内扩展", "微信 <-> pi 的双向消息通道")
+  }
+
+  ContainerDb(stateDir, "微信状态与媒体目录", "本地文件系统", "~/.pi/agent/wechat/（凭证 / cursor / context token / media）")
+}
+
+' --- 关系（Rel）----------------------------------------------------------
+' 终端路径：绑定账号与管理
+Rel(user, plugin, "在 pi 终端执行 /wechat login 绑定微信账号；查看状态 / 启停轮询", "终端命令")
+Rel(plugin, user, "展示登录二维码与连接状态", "终端 / UI 通知")
+
+' 微信路径：聊天（消息经微信平台内部路由）
+Rel(user, wechatApp, "收发微信消息、扫码确认登录", "微信 App")
+Rel(wechatApp, ilinkBackend, "发送消息 / 扫码确认", "平台内部")
+Rel(ilinkBackend, wechatApp, "投递消息 / 登录结果", "平台内部")
+
+Rel(plugin, ilinkBackend, "请求登录二维码 / 长轮询 / 发送回复与媒体 / typing", "HTTPS")
+Rel(ilinkBackend, plugin, "返回新消息 / 登录结果", "HTTPS")
+
+' 本地持久化
+Rel(plugin, stateDir, "读写凭证 / cursor / context token / media", "fs")
+
+LAYOUT_WITH_LEGEND()
+@enduml
