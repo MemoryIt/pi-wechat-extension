@@ -45,8 +45,6 @@ Rel(index, channel, "new Channel + setHost", $tags="allowed")
 Rel(index, adapter, "组装 inbound/outbound/media 端口实现，默认 WechatAuth 工厂", $tags="allowed")
 Rel(bridge, application, "事件翻译 → 用例委托（agent_settled / session_*）", $tags="allowed")
 Rel(bridge, channel, "调用通道公共方法（窄接口 BridgeChannel）", $tags="allowed")
-Rel(bridge, ports, "WechatAuth（类型）", $tags="allowed")
-Rel(bridge, storage, "凭证 / 账号", $tags="allowed")
 Rel(bridge, piApi, "事件 / 命令 / 工具 / 注入消息", $tags="event")
 
 Rel(application, channel, "窄接口（ReplyChannel / SessionChannel）", $tags="allowed")
@@ -66,7 +64,7 @@ Rel(adapter, ilink, "HTTPS：长轮询 / 发送 / 上传下载 / typing / 登录
 note as Constraints
   **硬约束**
   - 依赖方向：index → bridge / application / adapters / channel / ports
-  - bridge → application（事件翻译→用例委托）/ channel（窄接口）/ ports / storage；
+  - bridge → application（事件翻译→用例委托）/ channel（窄接口）/ shared；
     application → channel（ReplyChannel / SessionChannel 窄接口）/ ports（WechatAuth）/ storage / shared
   - channel → ports / storage / shared；adapters → ports + vendor；ports → 仅 types.ts 转发 vendor 协议类型
   - bridge 只做事件翻译，不承载用例；application 承载用例（SessionService / ReplyService），

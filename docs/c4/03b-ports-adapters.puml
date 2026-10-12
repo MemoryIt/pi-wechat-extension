@@ -15,7 +15,7 @@ title Component Diagram — Ports & Adapters 边界（调用方 → ports ← ad
 
 ' --- 插件侧：调用方与组合根 ----------------------------------------------
 Container_Boundary(plugin, "pi-wechat-extension（调用方）") {
-  Component(consumers, "Channel / Bridge / Application", "调用方", "只依赖 src/ports/ 的窄接口（application 另依赖 storage / shared），不接触 vendor", $tags="self")
+  Component(consumers, "Channel / Application", "调用方", "只依赖 src/ports/ 的窄接口（application 另依赖 storage / shared），不接触 vendor", $tags="self")
   Component(index, "index", "组合根", "createExtension：注入真实 adapters / fake ports", $tags="self")
 }
 
@@ -68,7 +68,7 @@ Rel(vendor, ilink, "HTTPS：长轮询 / 发送 / 上传下载 / typing / 登录"
 
 note as BoundaryNote
   **依赖倒置**
-  - 调用方（Channel / Bridge / Application）只 import `src/ports/`，不知道 vendor 存在；
+  - 调用方（Channel / Application）只 import `src/ports/`，不知道 vendor 存在；
     application 还用窄接口（ReplyChannel / SessionChannel）而非具体 Channel。
   - `src/adapters/` 是唯一包装 vendor 的自写层，实现对应端口。
   - 例外边界：`ports/types.ts` 转发 vendor 协议类型；

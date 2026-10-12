@@ -29,7 +29,6 @@ src/index.ts (组合根 createExtension)
 
 index       ──→ bridge / application / adapters / channel / ports（组合根统一装配）
 bridge      ──→ application（事件 → 用例委托）   bridge ──→ channel（窄接口：BridgeChannel）
-bridge      ──→ ports/*（WechatAuth）            bridge ──→ storage/*（凭证 / 账号）
 application ──→ channel（窄端口：ReplyChannel / SessionChannel）
 application ──→ storage/*（凭证读写） + ports/*（WechatAuth） + shared/*
 channel     ──→ ports/*（inbound/outbound/media/pi-host）
@@ -177,13 +176,13 @@ storage     ──→ shared/*
 - `Channel` 构造函数接受 `ChannelDeps`（`state` / `host` / `config` / `notifier` / `ports` / `logger` / `sleep`）；`ports` 提供 `{ inbound?, outbound?, media? }` 供测试注入 fake。
 - 协作类各自接受窄 deps：`PollingLoopDeps` / `RouterDeps` / `TypingDeps` / `SenderDeps` / `MediaStoreOptions`。
 
-### 4.10 会话生命周期（`application/session`）
+### 4.9 会话生命周期（`application/session`）
 
 - `SessionService` 是会话生命周期的唯一入口：`session_start` 自动连接（`startFromStoredToken`）、`/wechat login|start|stop|logout|status`、`session_shutdown`（`shutdown`）。
 - 所有「启动轮询」路径共用私有 `startPollingWith(opts, onError, afterSetConfig?)`：先 `setConfig` 同步凭证，再 `startPolling`；两处调用只出现一次，消除旧的 `setConfig` 与 `startPolling(opts)` 双凭证来源分叉（A3 类问题）。
 - 登录成功摘要只输出脱敏后的字段（D11）；行为不变性（文案 / 存储调用集合 / 轮询错误提示）与迁移前逐字一致（rf-2 行为契约，由 `tests/bridge` 回归）。
 
-### 4.11 窄接口面（bridge / application / tool 均不依赖具体 `Channel`）
+### 4.10 窄接口面（bridge / application / tool 均不依赖具体 `Channel`）
 
 | 窄接口 | 定义处 | 面向消费者 | 成员 |
 |---|---|---|---|
@@ -194,18 +193,18 @@ storage     ──→ shared/*
 
 `Channel` 实现这些窄接口的全部成员；消费者按需收敛依赖面，测试可注入对应 fake。
 
-### 4.12 轮询同步 `connecting`（A3）
+### 4.11 轮询同步 `connecting`（A3）
 
 - `PollingLoop.start()` **同步**把 `connectionState` 置为 `connecting`（在首次 `getUpdates` 之前），覆盖「已启动但首次 getUpdates 尚未返回」的窗口；首次 `getUpdates` 成功后置 `connected`。
 - 重启 pi 后 `/wechat status` 不再停留在旧的未连接状态（A3 修复，`tests/channel` 回归）。
 
-### 4.13 单条消息失败隔离与媒体 ack 失败隔离（F6）
+### 4.12 单条消息失败隔离与媒体 ack 失败隔离（F6）
 
 - `polling.ts`：单条 `onMessage` 处理失败只记录错误，不中断该批次轮询循环，后续消息继续处理（F6「连发多图后文本阻塞」修复）。
 - `router.ts`：媒体落盘后的 `wechat_media` ack（`host.sendMessage`）失败仅记录日志，不阻断媒体批次与队列排空。
 - `sync.json` 的 syncCursor 随轮询持续推进，不受失败消息影响。
 
-### 4.14 存储健壮性
+### 4.13 存储健壮性
 
 - **原子写**：先写同目录临时文件再 `renameSync` 覆盖，目标文件要么旧内容要么完整新内容（D12）。
 - **按路径串行队列**：同一路径的读-改-写按调用顺序执行，避免并发丢写；不同路径互不阻塞。
@@ -298,5 +297,5 @@ storage     ──→ shared/*
 - **配置/日志/时间等通用能力** → `src/shared/`。
 - **凭证、cursor、context token 等持久化** → `src/storage/`；新增写操作请复用 `writeJsonAtomic` + 按路径串行队列。
 - **不要绕过 `PiHost` 窄接口**：新增 pi 依赖时扩展 `PiHost` 并在 `index.ts` 的 `piToHost()` 适配，保持测试可注入。
-- **消费者不依赖具体 `Channel`**：新增 bridge / tool / application 消费时先定义窄接口，由 `Channel` 实现；改动 `Channel` 公共面时同步更新四个窄接口矩阵（见 4.11）。
+- **消费者不依赖具体 `Channel`**：新增 bridge / tool / application 消费时先定义窄接口，由 `Channel` 实现；改动 `Channel` 公共面时同步更新四个窄接口矩阵（见 4.10）。
 - 开发/测试流程与分层见第 7 节；提交前保持 `bun run test` 与 `bun run typecheck` 通过。

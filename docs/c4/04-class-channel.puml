@@ -388,7 +388,7 @@ end note
 
 note bottom of WechatAuth
   WechatAuth 不由 Channel 使用：
-  index 构造 createWechatAuth() 并交给 bridge（login）。
+  index 构造 createWechatAuth() 并交给 application/session（登录用例）。
 end note
 
 @enduml

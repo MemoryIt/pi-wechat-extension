@@ -66,7 +66,7 @@ src/index.ts  组合根：createExtension() 显式组装 application + ChannelSt
 ```
 
 依赖方向（单向，无倒置）：`index → bridge / application / adapters / channel / ports`；
-`bridge → application（事件→用例委托）/ channel（BridgeChannel 窄接口）/ ports / storage`；
+`bridge → application（事件→用例委托）/ channel（BridgeChannel 窄接口）/ shared`；
 `application → channel（ReplyChannel/SessionChannel）/ ports（WechatAuth）/ storage / shared`；
 `channel → ports / storage / shared`；`adapters → ports + vendor`。
 
