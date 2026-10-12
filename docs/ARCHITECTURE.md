@@ -2,15 +2,17 @@
 
 面向维护者。使用说明见 [`../README.md`](../README.md)。
 
-> 本文档描述 2026-09 重构后的 **Ports & Adapters（六边形）/ 薄通道**结构：
-> 旧的引擎门面目录、门面类与其工厂，以及模块级 `setPi`/`setConfig` 均已删除，
-> 由 `src/channel/` 的 `Channel` 与显式端口取代。
+> 本文档描述 2026-10 重构后的 **Ports & Adapters（六边形）/ 薄通道 + application 用例层**结构：
+> 旧的引擎门面目录、门面类与其工厂，以及模块级 `setPi`/`setConfig` 均已删除；
+> 用例与发送决策收拢到 `src/application/`，pi 事件翻译由 `src/bridge/` 承担，
+> 通道核心为 `src/channel/` 的 `Channel` 与显式端口。
 
 ## 1. 设计目标
 
 - **单用户模式**：一个微信账号、一个主会话与一个 `Channel` 实例，避免多用户 Map 与 userId 解析。
 - **事件驱动、无跨轮可变标记**：每轮 turn 的身份在事件发生时同步从 session 分支解析，不保存跨轮全局状态。
 - **端口隔离**：通道核心只依赖 `src/ports/` 定义的窄接口，不感知 pi 事件，也不直接接触微信 HTTP；测试注入 fake 端口即可隔离。
+- **用例层与事件翻译分离**：`src/application/` 承载用例（`SessionService` 会话生命周期、`ReplyService` 回复发送决策），`bridge` 只做 pi 事件的翻译与委托；application 依赖自身 DTO/窄接口、`storage` 与 `ports`，不感知 pi / vendor / 具体 `Channel`。
 - **适配器唯一接触 vendor**：所有对迁移自 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin) 的 `api/ auth/ cdn/ media/ messaging/ util/` 的调用都收敛在 `src/adapters/`（及两个再导出边界）。
 - **显式组合根**：`src/index.ts` 的 `createExtension(deps?)` 显式组装 `PiHost + Channel + WechatAuth`，不依赖模块级单例。
 - **纯协作类可单测**：`queue` / `media-store` / `router` / `typing` / `sender` / `polling` 通过依赖注入的窄接口工作，可脱离 `Channel` 独立单测。
@@ -19,24 +21,28 @@
 
 ```
 src/index.ts (组合根 createExtension)
-   ├──→ bridge/*         pi.on 事件、命令、工具（注入 Channel / WechatAuth）
-   ├──→ channel/*        Channel + 协作类 + ChannelState
-   ├──→ adapters/*       inbound / outbound / media / auth 默认工厂（组装端口）
+   ├──→ bridge/*         pi.on 事件、命令、工具（事件翻译，委托 application 用例）
+   ├──→ application/*    SessionService / ReplyService + 窄接口与 DTO
+   ├──→ channel/*        Channel + 协作类 + ChannelState + RequestIdGenerator
+   ├──→ adapters/*       inbound / outbound / media / auth 默认工厂（组装端口，ACL）
    └──→ ports/*          端口类型
 
-index    ──→ adapters/*（组装 ChannelState + inbound/outbound/media + Channel）
-bridge   ──→ channel（类型）        bridge   ──→ ports/*（WechatAuth）
-channel  ──→ ports/*（inbound/outbound/media/pi-host）
-channel  ──→ storage/* / shared/*
-adapters ──→ ports/* + vendor（api / auth / cdn / media / messaging / util）
-ports    ──→ 仅 ports/types.ts 转发 vendor 的 api/types
-shared   ──→ vendor/util（redact / file-logger 再导出边界）
-storage  ──→ shared/*
+index       ──→ bridge / application / adapters / channel / ports（组合根统一装配）
+bridge      ──→ application（事件 → 用例委托）   bridge ──→ channel（窄接口：BridgeChannel）
+bridge      ──→ ports/*（WechatAuth）            bridge ──→ storage/*（凭证 / 账号）
+application ──→ channel（窄端口：ReplyChannel / SessionChannel）
+application ──→ storage/*（凭证读写） + ports/*（WechatAuth） + shared/*
+channel     ──→ ports/*（inbound/outbound/media/pi-host）
+channel     ──→ storage/* / shared/*
+adapters    ──→ ports/* + vendor（api / auth / cdn / media / messaging / util）
+ports       ──→ 仅 ports/types.ts 转发 vendor 的 api/types
+shared      ──→ vendor/util（redact / file-logger 再导出边界）
+storage     ──→ shared/*
 ```
 
-- **禁止反向依赖**：`bridge` 不得被 `channel` / `ports` / `adapters` / `shared` / `storage` import；`channel` 不得 import `bridge`；`storage` 不得 import `channel` / `bridge`。
+- **禁止反向依赖**：`bridge` 不得被 `channel` / `application` / `ports` / `adapters` / `shared` / `storage` import；`channel` 不得 import `bridge`；`storage` 不得 import `channel` / `bridge`；`application` 不得 import pi / vendor / 具体 `Channel`（只依赖自有的窄接口、`storage`、`ports`、`shared`）。
 - **端口层无运行时逻辑**：`src/ports/*.ts` 仅类型 / 常量（唯一例外是 `types.ts` 的 vendor 协议类型转发）。
-- **隔离 vendor**：除 `src/adapters/**`、`src/ports/types.ts`、`src/shared/redact.ts`、`src/shared/file-logger.ts` 外，自写代码不 import `api/ auth/ cdn/ media/ messaging/ util/`。
+- **隔离 vendor**：除 `src/adapters/**`、`src/ports/types.ts`、`src/shared/redact.ts`、`src/shared/file-logger.ts` 外，自写代码不 import `api/ auth/ cdn/ media/ messaging/ util/`。vendor 的耦合细节见 [`vendor-constraints.md`](../vendor-constraints.md)（RF-5 产出）。
 - **通道不得回溯旧门面**：旧的引擎目录已删除，`channel` 只依赖端口与协作类。
 - **组合根组装端口**：`src/index.ts` 创建 `ChannelState` 与 `inbound/outbound/media` adapters，并把同一 state 注入 outbound 的 `getCredentials` 与 `Channel`；`channel` 只依赖 `ports/*`、`storage/*`、`shared/*`，不 import adapters。
 
@@ -46,7 +52,7 @@ storage  ──→ shared/*
 
 | 模块 | 职责 | 关键导出 |
 |------|------|----------|
-| `src/index.ts` | 组合根：`createExtension(deps?)` 显式组装 `ChannelState + adapters（inbound/outbound/media）+ Channel + WechatAuth`；把 `ExtensionAPI` 适配为 `PiHost`；注册工具 / 命令 / 事件 | `createExtension`、`ExtensionDeps`、`default` |
+| `src/index.ts` | 组合根：`createExtension(deps?)` 显式组装 `application（SessionService/ReplyService）+ ChannelState + adapters（inbound/outbound/media）+ Channel + WechatAuth`；把 `ExtensionAPI` 适配为 `PiHost`；注册工具 / 命令 / 事件并向 `registerBridge` 注入窄接口 | `createExtension`、`ExtensionDeps`、`default` |
 | `src/ports/types.ts` | 端口层类型边界：集中转发 vendor 协议类型与 `WechatCredentials` | `WeixinMessage`、`MessageItem`、`MessageItemType`、`WechatCredentials` |
 | `src/ports/inbound.ts` | 入站端口：拉取更新 | `WechatInbound`、`WechatInboundGetUpdatesParams`、`WechatInboundGetUpdatesResult` |
 | `src/ports/outbound.ts` | 出站端口：文本 / 文件 / typing / ticket | `WechatOutbound` |
@@ -58,23 +64,37 @@ storage  ──→ shared/*
 | `src/adapters/media.ts` | 包装 vendor `downloadMediaFromItem`，3 参回调适配为 5 参 | `createWechatMedia`、`WechatMediaDeps`、`WechatMediaLog` |
 | `src/adapters/auth.ts` | 包装 vendor `auth/login-qr` 两步登录 | `createWechatAuth` |
 
-### 3.2 bridge（pi 侧适配）
+### 3.1a application（用例层）
 
 | 模块 | 职责 | 关键导出 |
 |------|------|----------|
-| `src/bridge/events.ts` | 注册全部 `pi.on`；`agent_settled` 发送最终回复并释放队列 | `registerBridge` |
-| `src/bridge/turn.ts` | turn 身份解析（近纯函数）+ `input` FIFO | `WechatTurn`、`BranchEntry`、`pushPendingWechatInput`、`resetPendingWechatInputs`、`getBranch`、`isAssistantMessage`、`resolveTurnBeforeRun`、`resolvePendingWechatMeta`、`resolveTurnFromBranch`、`resolveActiveWechatMeta`、`extractLastReply`、`extractReplyText` |
-| `src/bridge/meta.ts` | Git 分支缓存 + 运行信息（成本增量累计） | `buildMetaInfo`、`refreshCachedGitBranch`、`getCachedGitBranch`、`readGitBranch`、`accumulateCost` |
-| `src/bridge/commands.ts` | `/wechat` 命令注册 | `registerCommands` |
-| `src/bridge/tool-send-file.ts` | `send_wechat_file` 工具定义 | `createSendFileTool` |
-| `src/bridge/login.ts` | 扫码登录流程与凭证落盘 | `performWechatLogin` |
+| `src/application/reply.ts` | 回复发送用例：`agent_settled` 的发送决策（防重 → 提取回复 → 停止 typing → 发送 → **成功后**才 `markRequestProcessed`；失败不标记可重试 D2；`finally` 释放队列 D1） | `ReplyService`、`handleSettled(ctx)` |
+| `src/application/session.ts` | 会话生命周期用例：`session_start` 自动连接、`/wechat login\|status\|start\|stop\|logout`、`session_shutdown`；所有「启动轮询」路径收敛到私有 `startPollingWith`（`setConfig` + `startPolling` 单点，消除双凭证来源） | `SessionService`、`SessionUi`、`SessionChannel` |
+| `src/application/types.ts` | 用例输入 DTO 与窄端口：`SettledContext`、`ReplyChannel` | `SettledContext`、`ReplyChannel` |
+
+> 依赖方向：`application/*` 只 import `./types`、`../shared/*`、`../storage/state`、`../ports/auth`；
+> 不感知 pi / vendor / 具体 `Channel`（通过 `ReplyChannel` / `SessionChannel` 窄接口协作）。
+>
+> 由 `index` 构造并向 `registerBridge` 注入；`bridge/events.ts` 只做「事件 → DTO」，用例决策在 application。
+
+### 3.2 bridge（pi 侧适配，事件翻译）
+
+| 模块 | 职责 | 关键导出 |
+|------|------|----------|
+| `src/bridge/events.ts` | 注册全部 `pi.on`；`agent_settled` 发送决策委托 `ReplyService`，会话生命周期委托 `SessionService`；对 Channel 只依赖 `BridgeChannel` 窄接口 | `registerBridge`、`BridgeChannel`、`BridgeDeps` |
+| `src/bridge/turn.ts` | turn 身份解析（近纯函数）+ `input` FIFO；状态收拢在 `TurnResolver` 实例（注入，无模块级 FIFO） | `TurnResolver`、`WechatTurn`、`BranchEntry`、`isAssistantMessage`、`extractLastReply`、`extractReplyText` |
+| `src/bridge/meta.ts` | Git 分支缓存 + 运行信息（成本增量累计）；状态收拢在 `MetaBuilder` 实例 | `MetaBuilder`、`readGitBranch` |
+| `src/bridge/session-ui.ts` | 把 pi `ExtensionContext` 的 `ui`/控制台/二维码适配为 `SessionUi` 窄接口 | `createSessionUi`、`SessionUi` |
+| `src/bridge/commands.ts` | `/wechat` 命令注册（委托 `SessionService`） | `registerCommands` |
+| `src/bridge/tool-send-file.ts` | `send_wechat_file` 工具定义；只依赖 `SendFileChannel` 窄接口（`sendFile`） | `createSendFileTool`、`SendFileChannel` |
 
 ### 3.3 channel（通道核心）
 
 | 模块 | 职责 | 关键导出 |
 |------|------|----------|
-| `src/channel/channel.ts` | 粗粒度编排器：持有 `ChannelState` 与全部协作类，装配完整通道；对 bridge 暴露公共方法 | `Channel`、`ChannelDeps`、`ChannelPorts` |
-| `src/channel/state.ts` | 运行时会话状态：单用户凭证、运行期注入依赖（config/host/notifier）、终端处理标志、requestId 追踪 | `ChannelState`、`Notifier` |
+| `src/channel/channel.ts` | 粗粒度编排器：持有 `ChannelState` 与全部协作类，装配完整通道；对 bridge / application / tool 暴露公共方法 | `Channel`、`ChannelDeps`、`ChannelPorts` |
+| `src/channel/state.ts` | 运行时会话状态：单用户凭证、运行期注入依赖（config/host/notifier）、终端处理标志（requestId 追踪已迁出到 `RequestIdGenerator`） | `ChannelState`、`Notifier` |
+| `src/channel/request-id.ts` | 请求 ID 生成器：`YYMMDDHHMMSSmmm` + 3 位同毫秒序号，独立追踪同毫秒唯一性 | `RequestIdGenerator`、`next(now?)` |
 | `src/channel/polling.ts` | 长轮询循环 / 退避 / abort-race / 重入守卫 / generation 令牌 / 连接状态 | `PollingLoop`、`PollingLoopDeps`、`ConnectionState`、`POLL_ABORTED`、`DEFAULT_LONG_POLL_TIMEOUT_MS`、`StartPollingOpts` |
 | `src/channel/queue.ts` | 轮次队列纯状态（FIFO / 忙闲 / 去重）+ 后台串行任务队列 | `TurnQueue`、`SerialTaskQueue` |
 | `src/channel/router.ts` | turn 执行（文本注入 / 媒体后台）+ 队列排空 | `MessageRouter`、`RouterDeps`、`RouterTurnOptions` |
@@ -98,9 +118,10 @@ storage  ──→ shared/*
 
 ## 4. 关键机制
 
-### 4.1 turn 识别与 `agent_settled` 发送
+### 4.1 turn 识别与 `agent_settled` 发送（决策在 `ReplyService`）
 
 - 微信文本 turn 在 `MessageRouter.execute()` 中先 `host.appendEntry("wechat_meta", { requestId })`，再 `host.sendUserMessage(content, { deliverAs: "followUp" })`。
+- `bridge/events.ts` 把 `agent_settled` 翻译成 `SettledContext`（`fromWechat` / `requestId` / `replyText` / `metaText` + `notify` 回调），发送决策交给 `application/reply` 的 `ReplyService.handleSettled()`；bridge 本身不承载发送逻辑。
 - 每轮身份不做跨轮存储：
   - `input` 事件把注入文本按 FIFO 入队（`pushPendingWechatInput`）。
   - `before_agent_start` 用 `resolveTurnBeforeRun()`：从分支叶子向前找 `wechat_meta`，若先遇到 assistant 则为终端 turn；找不到时用 `event.prompt` 与 FIFO 兜底。
@@ -121,7 +142,7 @@ storage  ──→ shared/*
 
 - `TurnQueue<T>`：`pending` FIFO、`busy`、`currentRequestId`、`processed: Map<id, ts>`。
 - `markRequestProcessed` 每 50 次触发一次清理（删除 1 小时前的记录）。
-- requestId = `formatTimestamp()`（15 位）+ 3 位同毫秒序号，保证同毫秒内唯一（D13，由 `Channel.generateRequestId()` 生成）。
+- requestId = `formatTimestamp()`（15 位）+ 3 位同毫秒序号，保证同毫秒内唯一（D13）。生成收拢在 `channel/request-id.ts` 的 `RequestIdGenerator`（`Channel` 私有 `generateRequestId()` 委托 `requestId.next()`），`ChannelState` 不再承载 requestId 追踪。
 - `SerialTaskQueue` 用 promise 链保证后台任务串行；单个任务抛错经 `onError` 上报且不阻断后续。
 
 ### 4.4 媒体后台串行（B5）
@@ -141,7 +162,7 @@ storage  ──→ shared/*
 ### 4.6 发送与重试
 
 - `MessageSender.sendWithRetry()` 入口先经 `canSend()` 检查凭证：缺凭证立即抛 `"Single user not initialized"`，不调用底层、不进入重试、不 sleep（D14 相关回归保持）。
-- 发送成功才由 bridge 标记 `markRequestProcessed`；重试采用指数退避 `1000 * 2^(attempt-1)`。
+- 发送成功才由 `ReplyService` 标记 `markRequestProcessed`（失败不标记、可重试 D2）；重试采用指数退避 `1000 * 2^(attempt-1)`。
 
 ### 4.7 日志与脱敏
 
@@ -156,7 +177,35 @@ storage  ──→ shared/*
 - `Channel` 构造函数接受 `ChannelDeps`（`state` / `host` / `config` / `notifier` / `ports` / `logger` / `sleep`）；`ports` 提供 `{ inbound?, outbound?, media? }` 供测试注入 fake。
 - 协作类各自接受窄 deps：`PollingLoopDeps` / `RouterDeps` / `TypingDeps` / `SenderDeps` / `MediaStoreOptions`。
 
-### 4.9 存储健壮性
+### 4.10 会话生命周期（`application/session`）
+
+- `SessionService` 是会话生命周期的唯一入口：`session_start` 自动连接（`startFromStoredToken`）、`/wechat login|start|stop|logout|status`、`session_shutdown`（`shutdown`）。
+- 所有「启动轮询」路径共用私有 `startPollingWith(opts, onError, afterSetConfig?)`：先 `setConfig` 同步凭证，再 `startPolling`；两处调用只出现一次，消除旧的 `setConfig` 与 `startPolling(opts)` 双凭证来源分叉（A3 类问题）。
+- 登录成功摘要只输出脱敏后的字段（D11）；行为不变性（文案 / 存储调用集合 / 轮询错误提示）与迁移前逐字一致（rf-2 行为契约，由 `tests/bridge` 回归）。
+
+### 4.11 窄接口面（bridge / application / tool 均不依赖具体 `Channel`）
+
+| 窄接口 | 定义处 | 面向消费者 | 成员 |
+|---|---|---|---|
+| `BridgeChannel` | `bridge/events.ts` | `registerBridge` | `setNotifier` / `setTerminalProcessing` / `startTyping` / `stopTyping` |
+| `SendFileChannel` | `bridge/tool-send-file.ts` | `send_wechat_file` 工具 | `sendFile` |
+| `ReplyChannel` | `application/types.ts` | `ReplyService` | `isRequestProcessed` / `stopTyping` / `sendReply` / `markRequestProcessed` / `setTerminalProcessing` / `onAiDone` |
+| `SessionChannel` | `application/session.ts` | `SessionService` | `connectionState` / `setConfig` / `startPolling` / `stopPolling` / `reset` |
+
+`Channel` 实现这些窄接口的全部成员；消费者按需收敛依赖面，测试可注入对应 fake。
+
+### 4.12 轮询同步 `connecting`（A3）
+
+- `PollingLoop.start()` **同步**把 `connectionState` 置为 `connecting`（在首次 `getUpdates` 之前），覆盖「已启动但首次 getUpdates 尚未返回」的窗口；首次 `getUpdates` 成功后置 `connected`。
+- 重启 pi 后 `/wechat status` 不再停留在旧的未连接状态（A3 修复，`tests/channel` 回归）。
+
+### 4.13 单条消息失败隔离与媒体 ack 失败隔离（F6）
+
+- `polling.ts`：单条 `onMessage` 处理失败只记录错误，不中断该批次轮询循环，后续消息继续处理（F6「连发多图后文本阻塞」修复）。
+- `router.ts`：媒体落盘后的 `wechat_media` ack（`host.sendMessage`）失败仅记录日志，不阻断媒体批次与队列排空。
+- `sync.json` 的 syncCursor 随轮询持续推进，不受失败消息影响。
+
+### 4.14 存储健壮性
 
 - **原子写**：先写同目录临时文件再 `renameSync` 覆盖，目标文件要么旧内容要么完整新内容（D12）。
 - **按路径串行队列**：同一路径的读-改-写按调用顺序执行，避免并发丢写；不同路径互不阻塞。
@@ -165,7 +214,7 @@ storage  ──→ shared/*
 
 ## 5. 与 openclaw-weixin 迁移模块的依赖关系
 
-`api/ auth/ cdn/ media/ messaging/ util/` 迁移自 Tencent/openclaw-weixin，视为**外部适配层**（vendor）。重构后自写代码只在 `src/adapters/` 与两个再导出边界调用下列函数（不展开其内部实现）：
+`api/ auth/ cdn/ media/ messaging/ util/` 迁移自 Tencent/openclaw-weixin，视为**外部适配层**（vendor）。重构后自写代码只在 `src/adapters/` 与两个再导出边界调用下列函数（不展开其内部实现）；不可动的耦合、维护规则与端口责任边界见 [`docs/vendor-constraints.md`](../vendor-constraints.md)（RF-5 产出）。
 
 | 自写调用点 | vendor 模块 | 调用面 |
 |------------|-------------|--------|
@@ -215,11 +264,12 @@ storage  ──→ shared/*
 
 ```
 ├── src/
-│   ├── index.ts          # 组合根：createExtension(deps?) 组装 PiHost + Channel + WechatAuth
-│   ├── bridge/           # pi 侧适配：events / turn / meta / commands / tool-send-file / login
-│   ├── channel/          # 通道核心：channel / state / polling / queue / router / media-store / typing / sender
+│   ├── index.ts          # 组合根：createExtension(deps?) 组装 application + Channel + adapters + WechatAuth
+│   ├── application/      # 用例层：reply（ReplyService）/ session（SessionService）/ types（DTO + 窄接口）
+│   ├── bridge/           # pi 侧适配（事件翻译）：events / turn / meta / commands / session-ui / tool-send-file
+│   ├── channel/          # 通道核心：channel / state / request-id / polling / queue / router / media-store / typing / sender
 │   ├── ports/            # 端口接口：inbound / outbound / media / auth / pi-host / types
-│   ├── adapters/         # 微信侧薄包装：inbound / outbound / media / auth（唯一接触 vendor）
+│   ├── adapters/         # 微信侧薄包装（ACL）：inbound / outbound / media / auth（唯一接触 vendor）
 │   ├── shared/           # 基础：config / logger / time / paths / types / redact(边界) / file-logger(边界)
 │   └── storage/          # 持久化：state / state-dir
 ├── api/ auth/ cdn/ media/ messaging/ util/   # 迁移自 openclaw-weixin（vendor，边界与调用面见第 5 节）
@@ -241,10 +291,12 @@ storage  ──→ shared/*
 
 ## 8. 扩展与维护指引
 
-- **新增 pi 事件/命令/工具** → `src/bridge/`（保持薄，只做事件解析与委托，经注入的 `Channel` 调用）。
+- **新增 pi 事件/命令/工具** → `src/bridge/`（保持薄，只做事件解析与委托；经 `BridgeChannel` / `SendFileChannel` 等窄接口调用 `Channel`）。
+- **发送决策 / 会话生命周期等用例变更** → `src/application/`（`ReplyService` / `SessionService`）；不要直接 import pi / vendor / 具体 `Channel`，只依赖 `ReplyChannel` / `SessionChannel` 窄接口。
 - **轮询/队列/发送/typing/媒体等通道能力变更** → `src/channel/` 对应协作类；不要把 vendor（HTTP/上传/解密）逻辑写进 `channel`。
 - **新增微信边界调用** → 先在 `src/ports/` 定义窄接口，再在 `src/adapters/` 实现包装，最后经 `ChannelDeps.ports` 注入；`channel` 不直接 import vendor。
 - **配置/日志/时间等通用能力** → `src/shared/`。
 - **凭证、cursor、context token 等持久化** → `src/storage/`；新增写操作请复用 `writeJsonAtomic` + 按路径串行队列。
 - **不要绕过 `PiHost` 窄接口**：新增 pi 依赖时扩展 `PiHost` 并在 `index.ts` 的 `piToHost()` 适配，保持测试可注入。
+- **消费者不依赖具体 `Channel`**：新增 bridge / tool / application 消费时先定义窄接口，由 `Channel` 实现；改动 `Channel` 公共面时同步更新四个窄接口矩阵（见 4.11）。
 - 开发/测试流程与分层见第 7 节；提交前保持 `bun run test` 与 `bun run typecheck` 通过。

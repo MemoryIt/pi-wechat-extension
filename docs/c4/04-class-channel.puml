@@ -8,6 +8,8 @@
 '   *--  组合（Channel 构造并持有）
 '   ..>  依赖 / 引用（构造注入或调用）
 '   <<orchestrator>> / <<state>> / <<collaborator>> / <<port>> / <<deps>> / <<module>>
+' 附注：bridge / tool / application 不依赖具体 Channel，只依赖窄接口
+'       （BridgeChannel / SendFileChannel / ReplyChannel / SessionChannel，见 docs/ARCHITECTURE.md §4.11）。
 ' ============================================================================
 
 skinparam classAttributeIconSize 0
@@ -29,12 +31,12 @@ package "src/channel（编排器 + 状态 + 协作类）" {
     - typing : TypingController
     - sender : MessageSender
     - router : MessageRouter
+    - requestId : RequestIdGenerator
     --
     + connectionState : ConnectionState
     + setHost(host : PiHost)
     + setNotifier(notifier : Notifier)
     + setConfig(config : WechatApiOpts)
-    + configure(deps)
     + getTerminalProcessing() : boolean
     + setTerminalProcessing(value)
     + initSession() : Promise<boolean>
@@ -53,9 +55,8 @@ package "src/channel（编排器 + 状态 + 协作类）" {
     + getCurrentRequestId() : string | null
     + isRequestProcessed(id) : boolean
     + markRequestProcessed(id)
-    + cleanupProcessedRequests()
     + reset()
-    - generateRequestId() : string
+    - generateRequestId() : string（委托 requestId.next()）
     - getCredentials() : WechatCredentials | null
     - getCurrentOpts() : WechatApiOpts | null
     - isSlashCommand(msg) : boolean
@@ -71,12 +72,17 @@ package "src/channel（编排器 + 状态 + 协作类）" {
     + host : PiHost | null
     + notifier : Notifier | null
     + isTerminalMessageProcessing : boolean
-    + lastRequestIdMs : number
-    + requestIdSeq : number
     --
     + resetSession()
     + getCredentials() : WechatCredentials | null
     + getOpts() : WechatApiOpts | null
+  }
+
+  class RequestIdGenerator <<collaborator>> {
+    - lastMs : number
+    - seq : number
+    --
+    + next(now?) : string（YYMMDDHHMMSSmmm + 3 位序号）
   }
 
   class PollingLoop <<collaborator>> {
@@ -295,6 +301,7 @@ Channel *-- MediaStore : mediaStore
 Channel *-- TypingController : typing
 Channel *-- MessageSender : sender
 Channel *-- MessageRouter : router
+Channel *-- RequestIdGenerator : requestId（generateRequestId 委托）
 
 ' ============ 构造注入 ============
 Channel ..> ChannelDeps : constructor(deps)
@@ -351,10 +358,27 @@ Channel ..> WechatCredentials : getCredentials / getOpts（委托 state）
 ' ============ 说明 ============
 note right of Channel
   编排器：
-  - 构造时创建全部协作类（组合关系）
+  - 构造时创建全部协作类（组合关系，含 RequestIdGenerator）
   - 只依赖 PiHost / WechatInbound / WechatOutbound / WechatMedia 端口
   - ports 为必填，由组合根 index 组装真实实现（及 ChannelState）后注入
   - 无模块级单例；createExtension() 每次新建独立实例
+  - requestId 由 RequestIdGenerator 生成，不保存在 ChannelState 中
+  - 已删除 configure() / cleanupProcessedRequests()（S6）：requestId 追踪
+    迁出到 RequestIdGenerator，ChannelState 收敛为凭证 + 依赖 + 终端标志
+end note
+
+note right of ChannelState
+  requestId 追踪已迁出：不再有 lastRequestIdMs / requestIdSeq 字段
+  （用途由 RequestIdGenerator 承担，见 request-id.ts）。
+end note
+
+note bottom of Channel
+  bridge / application / tool 均不依赖具体 Channel 类，只依赖窄接口：
+  - BridgeChannel（setNotifier / setTerminalProcessing / startTyping / stopTyping）
+  - SendFileChannel（sendFile）
+  - ReplyChannel（isRequestProcessed / stopTyping / sendReply / markRequestProcessed /
+    setTerminalProcessing / onAiDone）
+  - SessionChannel（connectionState / setConfig / startPolling / stopPolling / reset）
 end note
 
 note bottom of RouterDeps

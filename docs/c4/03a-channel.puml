@@ -17,8 +17,9 @@ title Component Diagram — Channel 子系统（展开 03-components.puml 中的
 
 ' --- Channel 内部：编排器 + 状态 + 协作类 ---------------------------------
 Container_Boundary(channel, "Channel（src/channel/）") {
-  Component(channelCore, "channel", "编排器", "Channel：生命周期 / 消息编排 / 排空 / requestId 生成", $tags="self")
-  Component(state, "state", "状态", "ChannelState：单用户凭证 / 注入依赖 / 终端标志 / requestId 追踪", $tags="self")
+  Component(channelCore, "channel", "编排器", "Channel：生命周期 / 消息编排 / 排空（requestId 委托 RequestIdGenerator）", $tags="self")
+  Component(state, "state", "状态", "ChannelState：单用户凭证 / 注入依赖 / 终端标志（requestId 已迁出）", $tags="self")
+  Component(requestId, "request-id", "生成器", "RequestIdGenerator：YYMMDDHHMMSSmmm + 3 位同毫秒序号", $tags="self")
   Component(polling, "polling", "长轮询", "退避 / abort-race / 重入守卫 / generation 令牌", $tags="self")
   Component(queue, "queue", "队列", "TurnQueue FIFO / 去重 + SerialTaskQueue 后台串行（纯状态）", $tags="self")
   Component(router, "router", "路由", "turn 执行（文本注入 / 媒体后台）+ 队列排空", $tags="self")
@@ -41,6 +42,7 @@ Component(shared, "Shared", "基础", "config / logger / time / types", $tags="s
 
 ' --- 关系（Channel 内部）--------------------------------------------------
 Rel(channelCore, state, "持有 / 读写", $tags="allowed")
+Rel(channelCore, requestId, "构造 / 持有（generateRequestId 委托）", $tags="allowed")
 Rel(channelCore, polling, "构造 / 持有", $tags="allowed")
 Rel(channelCore, queue, "构造 / 持有", $tags="allowed")
 Rel(channelCore, router, "构造 / 持有", $tags="allowed")
