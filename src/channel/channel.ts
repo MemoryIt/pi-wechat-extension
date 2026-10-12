@@ -32,7 +32,6 @@ import { TypingController } from "./typing.js";
 import { MessageSender } from "./sender.js";
 import { MessageRouter } from "./router.js";
 import { MediaStore } from "./media-store.js";
-import { parseInbound } from "./inbound-parser.js";
 
 /** 微信边界端口（生产由组合根注入真实端口实现；测试注入 fake）。 */
 export interface ChannelPorts {
@@ -191,18 +190,11 @@ export class Channel {
   }
 
   /**
-   * 处理收到的微信消息：slash / contextToken 更新 / 触发 turn。
+   * 处理收到的微信消息：contextToken 更新 / 触发 turn。
    */
   async handleMessage(msg: WeixinMessage, opts: WechatApiOpts): Promise<void> {
     // 单用户模式下，忽略消息来源（固定发给单用户）
     const requestId = this.generateRequestId();
-    const parsed = parseInbound(msg);
-
-    // 检查 slash command
-    if (parsed.isCommand) {
-      await this.handleSlashCommand(parsed.text, opts);
-      return;
-    }
 
     // 更新 contextToken（如果消息中有）
     if (msg.context_token && msg.context_token !== this.state.contextToken) {
@@ -307,20 +299,6 @@ export class Channel {
   }
 
   // ============== 私有工具 ==============
-
-  /**
-   * 处理 slash command。
-   *
-   * 入参为已解析的原始拼接文本（由 `handleMessage` 传入，避免重复解析）；
-   * `opts` 目前未使用（保留参数以保持调用签名一致）。
-   */
-  private async handleSlashCommand(rawText: string, opts: WechatApiOpts): Promise<void> {
-    const trimmed = rawText.trim();
-
-    if (trimmed === "/help") {
-      await this.sendText("可用命令: /help");
-    }
-  }
 
   private getCurrentOpts(): WechatApiOpts | null {
     return this.state.getOpts();

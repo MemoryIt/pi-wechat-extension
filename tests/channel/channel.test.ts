@@ -6,7 +6,8 @@
  *
  * 覆盖：D3 轮询重入、D6 同步抛错被吞、D7 队列 rejection 未处理、
  *       D9 未传 AbortSignal、D13 requestId 同毫秒冲突、
- *       D14 fileName 被忽略、D15 slash 判定、D16 typing ticket 缓存不失效 / timer 泄漏。
+ *       D14 fileName 被忽略、CS-3 slash 拦截移除后的 "/foo" 行为回归、
+ *       D16 typing ticket 缓存不失效 / timer 泄漏。
  */
 import { test, expect, mock, beforeEach } from "bun:test";
 import { setSystemTime } from "bun:test";
@@ -289,10 +290,28 @@ test("sendReply 凭证就绪：正常走底层发送（一次成功）", async (
 });
 
 // ---------------------------------------------------------------------------
-// D15：isSlashCommand 魔法数字 + 只看首条
-// CS-2：slash 判定已抽到 src/channel/inbound-parser.ts，原两条断言
-// （首条 slash / 非首条 slash）已 1:1 迁移至 tests/channel/inbound-parser.test.ts。
+// CS-3：自研层 slash 拦截已移除
+//
+// 行为变更：以 "/" 开头的消息不再被拦截/静默吞掉，与普通消息一样进入 AI 路径。
+// 原 D15（isSlashCommand 魔法数字 + 只看首条）与 parseInbound 的 isCommand
+// 断言随该功能一并失效（见 result 的 test-changes ledger）。
 // ---------------------------------------------------------------------------
+
+test("CS-3 行为变更：'/' 开头的消息不再被拦截，作为普通消息交给 AI", async () => {
+  await channel.initSession();
+
+  await channel.handleMessage(textMessage("/foo"), opts);
+
+  // 未被 slash 早退：走完 wechat_meta -> sendUserMessage 的 AI 路径
+  expect(pi.calls.appendEntry[0][0]).toBe("wechat_meta");
+  expect(pi.calls.sendUserMessage.length).toBe(1);
+  expect(pi.calls.sendUserMessage[0][0]).toBe("/foo");
+  expect(pi.calls.sendUserMessage[0][1]).toEqual({ deliverAs: "followUp" });
+
+  // 该路径不发送任何文本回执（区别于媒体 ack / 旧 /help 回显）
+  expect(outboundMock.sendText).not.toHaveBeenCalled();
+});
+
 // ---------------------------------------------------------------------------
 // D16：typing ticket 缓存不随 contextToken 失效
 // ---------------------------------------------------------------------------

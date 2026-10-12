@@ -157,7 +157,8 @@ AI 繁忙或终端正在处理消息时，新到的微信消息进入 FIFO 队�
 - `ctx.newSession()`、`ctx.fork()` 等会话控制方法**仅存在于 `ExtensionCommandContext`**（`registerCommand` 的 handler 上下文），普通事件上下文不可用。
 - 官方处理顺序：extension commands → `input` 事件 → skill/template 展开 → LLM。这是 **by design**（详见 `docs/ARCHITECTURE.md`）。
 
-> 另外，微信侧以 `/` 开头的消息会被引擎拦截；目前仅 `/help` 有响应，其它 `/xxx` 不会进入 AI。
+> 另外，自研通道层不再拦截以 `/` 开头的微信消息：这类消息会作为普通用户消息交给 LLM。
+> 但由于上面的路由绕过，它们仍然不会触发 pi 的真实命令（by design）。
 
 ### D9 — 停止轮询不能真正取消在途请求
 
@@ -179,6 +180,6 @@ AI 繁忙或终端正在处理消息时，新到的微信消息进入 FIFO 队�
 | 回复失败 | 检查 `needs_relogin` 提示；重新登录 |
 | 看不到调试日志 | 设置 `WECHAT_DEBUG=true`，或在 `config.json` 设 `"debug": true` |
 | 媒体没有保存 | 检查 `mediaStoragePath`/`WECHAT_MEDIA_PATH` 是否可写 |
-| 微信命令无反应 | 见上文「命令不会被路由」 |
+| 微信 `/命令` 不执行 pi 命令 | 见上文「微信发送的 `/命令` 不会触发 pi 命令」；消息会照常交给 LLM |
 
 > 想了解框架结构、模块划分与开发/测试方式，请见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
