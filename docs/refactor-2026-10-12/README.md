@@ -37,11 +37,11 @@
 
 ## 阶段总览
 
-| 阶段 | 内容 | 依赖 | 风险 |
-|---|---|---|---|
+| 阶段 | 内容 | 依赖 | 风险 | 状态 |
+|---|---|---|---|---|
 | S0 | 基线冻结（主 Agent，不派子 Agent） | — | — |
-| **S1** | 抽出 `application/reply`，`bridge/events` 变薄 | S0 | 中 |
-| S2 | 会话生命周期收拢到 `application/session` | S1 | 中 |
+| **S1** | 抽出 `application/reply`，`bridge/events` 变薄 | S0 | 中 | ✅ 完成 `a289c2f`（138 pass） |
+| S2 | 会话生命周期收拢到 `application/session` | S1 | 中 | 进行中 |
 | S3 | 去模块级可变状态 + `index` 闭包接线 | S2 | 低–中 |
 | S4 | 修 A3：`polling.start()` 同步 `connecting` | 可与主线并行 | 低 |
 | S5 | adapters ACL + vendor 耦合文档 + 端口冻结 | 可与主线并行 | 低 |
