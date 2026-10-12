@@ -2,7 +2,9 @@
  * events.ts - 事件桥接
  *
  * 从 index.ts 拆出：注册所有 `pi.on(...)` 处理器；`agent_settled` 的发送决策
- * 委托给应用层的 `ReplyService`（见 `src/application/reply.ts`）。
+ * 委托给应用层的 `ReplyService`（见 `src/application/reply.ts`），会话生命周期
+ * （session_start 自动连接 / session_shutdown 关闭）委托 `SessionService`
+ * （见 `src/application/session.ts`）。
  *
  * 事件桥接的核心约定：
  * - 每轮 turn 的身份（`{ fromWechat, requestId }`）都在事件发生时通过
@@ -13,7 +15,6 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getDefaultAccountToken } from "../storage/state.js";
 import type { Channel } from "../channel/channel.js";
 import { isDebugEnabled } from "../shared/config.js";
 import { createLogger } from "../shared/logger.js";
@@ -26,10 +27,17 @@ import {
 } from "./turn.js";
 import { buildMetaInfo, refreshCachedGitBranch } from "./meta.js";
 import type { ReplyService } from "../application/reply.js";
+import type { SessionService } from "../application/session.js";
+import { createSessionUi } from "./session-ui.js";
 
 const logger = createLogger({ isDebugEnabled: () => isDebugEnabled() });
 
-export function registerBridge(pi: ExtensionAPI, channel: Channel, reply: ReplyService): void {
+export function registerBridge(
+  pi: ExtensionAPI,
+  channel: Channel,
+  reply: ReplyService,
+  session: SessionService,
+): void {
   // ============== session_start ==============
 
   pi.on("session_start", async (_event, ctx) => {
@@ -39,25 +47,14 @@ export function registerBridge(pi: ExtensionAPI, channel: Channel, reply: ReplyS
     // B4：会话过期（needs_relogin）时通过 UI 通知用户
     channel.setNotifier((msg, type) => ctx.ui.notify(msg, type ?? "info"));
 
-    const token = await getDefaultAccountToken();
-    if (token) {
-      channel.setConfig({ baseUrl: token.baseUrl, token: token.botToken });
-      logger.debug(`session_start: loaded token for userId=${token.userId}`);
-
-      // 启动轮询
-      channel.startPolling({ baseUrl: token.baseUrl, token: token.botToken }).catch((err) => {
-        logger.error("Polling error:", err.message);
-      });
-    } else {
-      logger.debug(`session_start: no logged in account found`);
-    }
+    // 会话生命周期（自动连接）收拢到 SessionService
+    await session.startFromStoredToken(createSessionUi(ctx));
   });
 
   // ============== session_shutdown ==============
 
   pi.on("session_shutdown", async () => {
-    channel.stopPolling();
-    channel.reset();
+    session.shutdown();
   });
 
   // ============== input ==============

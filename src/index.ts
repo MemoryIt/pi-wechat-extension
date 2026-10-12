@@ -28,6 +28,7 @@ import { createSendFileTool } from "./bridge/tool-send-file.js";
 import { registerCommands } from "./bridge/commands.js";
 import { registerBridge } from "./bridge/events.js";
 import { ReplyService } from "./application/reply.js";
+import { SessionService } from "./application/session.js";
 import { isDebugEnabled } from "./shared/config.js";
 import { createLogger } from "./shared/logger.js";
 
@@ -66,9 +67,11 @@ export function createExtension(deps: ExtensionDeps = {}) {
 
     const auth = deps.auth ?? createWechatAuth();
 
+    const session = new SessionService({ channel, auth, logger });
+
     pi.registerTool(createSendFileTool(channel));
-    registerCommands(pi, channel, auth);
-    registerBridge(pi, channel, new ReplyService({ channel, logger }));
+    registerCommands(pi, session);
+    registerBridge(pi, channel, new ReplyService({ channel, logger }), session);
   };
 }
 
