@@ -290,27 +290,9 @@ test("sendReply 凭证就绪：正常走底层发送（一次成功）", async (
 
 // ---------------------------------------------------------------------------
 // D15：isSlashCommand 魔法数字 + 只看首条
+// CS-2：slash 判定已抽到 src/channel/inbound-parser.ts，原两条断言
+// （首条 slash / 非首条 slash）已 1:1 迁移至 tests/channel/inbound-parser.test.ts。
 // ---------------------------------------------------------------------------
-
-test("D15 基线：首条即为文本且以 / 开头时判定为 slash command", () => {
-  const c = channel as unknown as AnyChannel;
-  const isSlash = c.isSlashCommand.bind(c);
-  expect(isSlash({ item_list: [{ type: MessageItemType.TEXT, text_item: { text: "/help" } }] })).toBe(true);
-  expect(isSlash({ item_list: [{ type: MessageItemType.TEXT, text_item: { text: "hi" } }] })).toBe(false);
-});
-
-test("D15 目标：应能识别非首条文本中的 slash command", () => {
-  const c = channel as unknown as AnyChannel;
-  const isSlash = c.isSlashCommand.bind(c);
-  const msg = {
-    item_list: [
-      { type: MessageItemType.IMAGE, image_item: {} },
-      { type: MessageItemType.TEXT, text_item: { text: "/help" } },
-    ],
-  };
-  expect(isSlash(msg)).toBe(true);
-});
-
 // ---------------------------------------------------------------------------
 // D16：typing ticket 缓存不随 contextToken 失效
 // ---------------------------------------------------------------------------

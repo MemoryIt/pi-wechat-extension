@@ -12,7 +12,6 @@
  */
 
 import type { WeixinMessage, WechatCredentials } from "../ports/types.js";
-import { MessageItemType } from "../ports/types.js";
 import type { WechatInbound } from "../ports/inbound.js";
 import type { WechatOutbound } from "../ports/outbound.js";
 import type { WechatMedia } from "../ports/media.js";
@@ -33,6 +32,7 @@ import { TypingController } from "./typing.js";
 import { MessageSender } from "./sender.js";
 import { MessageRouter } from "./router.js";
 import { MediaStore } from "./media-store.js";
+import { parseInbound } from "./inbound-parser.js";
 
 /** 微信边界端口（生产由组合根注入真实端口实现；测试注入 fake）。 */
 export interface ChannelPorts {
@@ -196,10 +196,11 @@ export class Channel {
   async handleMessage(msg: WeixinMessage, opts: WechatApiOpts): Promise<void> {
     // 单用户模式下，忽略消息来源（固定发给单用户）
     const requestId = this.generateRequestId();
+    const parsed = parseInbound(msg);
 
     // 检查 slash command
-    if (this.isSlashCommand(msg)) {
-      await this.handleSlashCommand(msg, opts);
+    if (parsed.isCommand) {
+      await this.handleSlashCommand(parsed.text, opts);
       return;
     }
 
@@ -308,37 +309,13 @@ export class Channel {
   // ============== 私有工具 ==============
 
   /**
-   * 提取消息中所有文本项拼接后的内容。
-   */
-  private extractText(msg: WeixinMessage): string {
-    const parts: string[] = [];
-    for (const item of msg.item_list ?? []) {
-      if (item.type === MessageItemType.TEXT) {
-        parts.push(item.text_item?.text ?? "");
-      }
-    }
-    return parts.join("\n");
-  }
-
-  /**
-   * 检查是否是 slash command（遍历所有 item，不再只看首条 / 不再用魔法数字）。
-   */
-  private isSlashCommand(msg: WeixinMessage): boolean {
-    for (const item of msg.item_list ?? []) {
-      if (item.type !== MessageItemType.TEXT) continue;
-      const text = item.text_item?.text ?? "";
-      if (text.trim().startsWith("/")) return true;
-    }
-    return false;
-  }
-
-  /**
    * 处理 slash command。
    *
-   * 注：opts 目前未使用（保留参数以保持调用签名一致）。
+   * 入参为已解析的原始拼接文本（由 `handleMessage` 传入，避免重复解析）；
+   * `opts` 目前未使用（保留参数以保持调用签名一致）。
    */
-  private async handleSlashCommand(msg: WeixinMessage, opts: WechatApiOpts): Promise<void> {
-    const trimmed = this.extractText(msg).trim();
+  private async handleSlashCommand(rawText: string, opts: WechatApiOpts): Promise<void> {
+    const trimmed = rawText.trim();
 
     if (trimmed === "/help") {
       await this.sendText("可用命令: /help");

@@ -13,7 +13,6 @@
  * isTerminalProcessing / logger），不直接持有通道编排器，便于单测。
  */
 
-import { MessageItemType } from "../ports/types.js";
 import type { WeixinMessage } from "../ports/types.js";
 import { TurnQueue } from "./queue.js";
 import type { SerialTaskQueue } from "./queue.js";
@@ -23,6 +22,7 @@ import type { PluginLogger } from "../shared/logger.js";
 import { sleep } from "../shared/time.js";
 import type { WechatApiOpts } from "../shared/types.js";
 import type { PiHost } from "../ports/pi-host.js";
+import { parseInbound } from "./inbound-parser.js";
 
 export type RouterTurnOptions = WechatApiOpts;
 
@@ -86,10 +86,9 @@ export class MessageRouter {
     const { queue } = this;
 
     // === 媒体消息处理 ===
-    const hasText = msg.item_list?.some(item => item.type === MessageItemType.TEXT && item.text_item?.text?.trim());
-    const hasMedia = msg.item_list?.some(item => item.type !== MessageItemType.TEXT);
+    const parsed = parseInbound(msg);
 
-    if (hasMedia && !hasText) {
+    if (parsed.hasMedia && !parsed.hasText) {
       logger.debug(`Media message detected, acknowledging and processing in background...`);
 
       // B5：立即 ack（不含路径），下载/落盘放到后台串行队列，不阻塞轮询主循环。
@@ -127,14 +126,8 @@ export class MessageRouter {
       // 写入 wechat_meta（仅 requestId）—— pi 调用可能同步抛错
       host.appendEntry("wechat_meta", { requestId });
 
-      // 直接获取文本内容
-      const textParts: string[] = [];
-      for (const item of msg.item_list ?? []) {
-        if (item.type === MessageItemType.TEXT) {
-          textParts.push(item.text_item?.text ?? "");
-        }
-      }
-      const content = textParts.join("\n");
+      // 直接使用解析后的文本内容
+      const content = parsed.text;
 
       // sendUserMessage 为同步 void：同步抛错必须在这里被捕获，不得冒泡成「轮询失败」
       host.sendUserMessage(content, { deliverAs: "followUp" });
