@@ -368,8 +368,8 @@ note right of Channel
 end note
 
 note right of ChannelState
-  requestId 追踪已迁出：不再有 lastRequestIdMs / requestIdSeq 字段
-  （用途由 RequestIdGenerator 承担，见 request-id.ts）。
+  requestId 追踪已迁出：不再保存同毫秒序号等 requestId 追踪字段
+  （生成职责由 RequestIdGenerator 承担，见 request-id.ts）。
 end note
 
 note bottom of Channel
