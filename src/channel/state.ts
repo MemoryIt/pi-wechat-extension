@@ -1,8 +1,9 @@
 /**
  * channel/state.ts - 通道运行时会话状态
  *
- * 从通道编排器抽出的可变态：单用户凭证、运行期注入依赖（config/host/notifier）、
- * 终端消息处理标志与请求 ID 追踪。
+ * 从通道编排器抽出的可变态：单用户凭证、运行期注入依赖（config/host/notifier）
+ * 与终端消息处理标志。requestId 追踪已迁出到独立的 `RequestIdGenerator`
+ * （见 `request-id.ts`），此处不再承载。
  *
  * 只依赖 `shared/types` 与 `ports/pi-host`，不反向依赖 engine，避免 channel → engine
  * 的依赖倒置；协作类（PollingLoop / TurnQueue / TypingController / MessageSender /
@@ -30,12 +31,8 @@ export class ChannelState {
   // === 终端消息处理状态 ===
   isTerminalMessageProcessing = false;
 
-  // === 请求追踪（仅 requestId）===
-  lastRequestIdMs = -1;
-  requestIdSeq = 0;
-
   /**
-   * 清理会话级状态：凭证、终端处理标志与请求追踪计数。
+   * 清理会话级状态：凭证与终端处理标志。
    *
    * 保留 `config` / `host` / `notifier`（与旧编排器 `reset()` 对这些字段的
    * 处理一致：它们跨 reset 存续，不清空）。
@@ -46,8 +43,6 @@ export class ChannelState {
     this.contextToken = null;
 
     this.isTerminalMessageProcessing = false;
-    this.lastRequestIdMs = -1;
-    this.requestIdSeq = 0;
   }
 
   /**

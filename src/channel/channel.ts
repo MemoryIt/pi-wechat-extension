@@ -17,13 +17,14 @@ import type { WechatOutbound } from "../ports/outbound.js";
 import type { WechatMedia } from "../ports/media.js";
 import * as storage from "../storage/state.js";
 import { isDebugEnabled } from "../shared/config.js";
-import { sleep as defaultSleep, formatTimestamp } from "../shared/time.js";
+import { sleep as defaultSleep } from "../shared/time.js";
 import type { WechatApiOpts } from "../shared/types.js";
 import type { PiHost } from "../ports/pi-host.js";
 import type { PluginLogger } from "../shared/logger.js";
 import { createLogger } from "../shared/logger.js";
 import { ChannelState } from "./state.js";
 import type { Notifier } from "./state.js";
+import { RequestIdGenerator } from "./request-id.js";
 import { PollingLoop } from "./polling.js";
 import type { ConnectionState } from "./polling.js";
 import { TurnQueue, SerialTaskQueue } from "./queue.js";
@@ -63,6 +64,7 @@ export class Channel {
   private readonly typing: TypingController;
   private readonly sender: MessageSender;
   private readonly router: MessageRouter;
+  private readonly requestId = new RequestIdGenerator();
 
   constructor(deps: ChannelDeps) {
     this.state = deps.state ?? new ChannelState();
@@ -124,6 +126,11 @@ export class Channel {
     });
   }
 
+  // ============== 公共 API（facade for bridge / application / tests）==============
+  // 窄接口面：bridge 用 BridgeChannel（setNotifier / startTyping / stopTyping /
+  // setTerminalProcessing）、application 用 ReplyChannel / SessionChannel、
+  // tool-send-file 用 { sendFile }；tests 直接测 Channel 自身。
+
   setHost(host: PiHost): void {
     this.state.host = host;
   }
@@ -134,12 +141,6 @@ export class Channel {
 
   setConfig(config: WechatApiOpts): void {
     this.state.config = config;
-  }
-
-  /** 可选字段各自覆盖：未提供的依赖保持不变。 */
-  configure(deps: { host?: PiHost; config?: WechatApiOpts }): void {
-    if (deps.host) this.state.host = deps.host;
-    if (deps.config) this.state.config = deps.config;
   }
 
   get connectionState(): ConnectionState {
@@ -302,10 +303,6 @@ export class Channel {
     this.queue.markRequestProcessed(requestId);
   }
 
-  cleanupProcessedRequests(): void {
-    this.queue.cleanupProcessedRequests();
-  }
-
   // ============== 重置 ==============
 
   reset(): void {
@@ -313,7 +310,7 @@ export class Channel {
 
     this.queue.reset();
 
-    // 清空会话状态：凭证 + 终端标志 + 请求追踪（config/host/notifier 保留）
+    // 清空会话状态：凭证 + 终端标志（config/host/notifier 保留）
     this.state.resetSession();
 
     // 轮询部分：generation 过期、abort、重建 controller、清 cursor/连接状态/失败计数
@@ -376,15 +373,9 @@ export class Channel {
   /**
    * 生成请求 ID
    * 格式: YYMMDDHHMMSSmmm + 3 位同毫秒序号（保证同一毫秒内也唯一）
+   * 委托 `RequestIdGenerator`（签名与产出格式不变）。
    */
   private generateRequestId(): string {
-    const now = Date.now();
-    if (now !== this.state.lastRequestIdMs) {
-      this.state.lastRequestIdMs = now;
-      this.state.requestIdSeq = 0;
-    } else {
-      this.state.requestIdSeq += 1;
-    }
-    return `${formatTimestamp(new Date(now))}${String(this.state.requestIdSeq).padStart(3, "0")}`;
+    return this.requestId.next();
   }
 }
