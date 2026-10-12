@@ -39,15 +39,15 @@
 
 | 阶段 | 内容 | 依赖 | 风险 | 状态 |
 |---|---|---|---|---|
-| S0 | 基线冻结（主 Agent，不派子 Agent） | — | — |
+| S0 | 基线冻结（主 Agent，不派子 Agent） | — | — | ✅ 基线 129 pass |
 | **S1** | 抽出 `application/reply`，`bridge/events` 变薄 | S0 | 中 | ✅ 完成 `a289c2f`（138 pass） |
-| S2 | 会话生命周期收拢到 `application/session` | S1 | 中 | 进行中 |
-| S3 | 去模块级可变状态 + `index` 闭包接线 | S2 | 低–中 |
-| S4 | 修 A3：`polling.start()` 同步 `connecting` | 可与主线并行 | 低 |
-| S5 | adapters ACL + vendor 耦合文档 + 端口冻结 | 可与主线并行 | 低 |
-| S6 | Channel 瘦身 / ChannelState 收敛（可选） | S1–S3 | 中 |
-| S7 | F6「连发多图后文本阻塞」定位与修复 | 独立 | 中 |
-| S8 | 文档归档与清理 | 全部 | 低 |
+| **S2** | 会话生命周期收拢到 `application/session` | S1 | 中 | ✅ 完成 `aa55943`（155 pass） |
+| S3 | 去模块级可变状态 + `index` 闭包接线 | S2 | 低–中 | 进行中 |
+| S4 | 修 A3：`polling.start()` 同步 `connecting` | 可与主线并行 | 低 | 待办 |
+| S5 | adapters ACL + vendor 耦合文档 + 端口冻结 | 可与主线并行 | 低 | 待办 |
+| S6 | Channel 瘦身 / ChannelState 收敛（可选） | S1–S3 | 中 | 待办 |
+| S7 | F6「连发多图后文本阻塞」定位与修复 | 独立 | 中 | 待办 |
+| S8 | 文档归档与清理 | 全部 | 低 | 待办 |
 
 ## 流程约定
 
