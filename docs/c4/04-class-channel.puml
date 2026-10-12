@@ -5,7 +5,7 @@
 '
 ' 事实来源：src/channel/*.ts、src/ports/*.ts、docs/ARCHITECTURE.md
 ' 约定：
-'   *--  组合（Channel 构造并持有）
+'   *--  组合（构造并持有）
 '   ..>  依赖 / 引用（构造注入或调用）
 '   <<orchestrator>> / <<state>> / <<collaborator>> / <<port>> / <<deps>> / <<module>>
 ' 附注：bridge / tool / application 不依赖具体 Channel，只依赖窄接口
@@ -21,23 +21,21 @@ title Class Diagram — Channel (src/channel/)
 package "src/channel（编排器 + 状态 + 协作类）" {
 
   class Channel <<orchestrator>> {
-    - state : ChannelState
+    + state : ChannelState
     - logger : PluginLogger
-    - sleep : (ms) => Promise<void>
+    - credentialLoader : CredentialLoader
     - poller : PollingLoop
-    - queue : TurnQueue
-    - mediaStore : MediaStore
-    - mediaQueue : SerialTaskQueue
     - typing : TypingController
     - sender : MessageSender
     - router : MessageRouter
-    - requestId : RequestIdGenerator
+    - inboundHandler : InboundHandler
+    --
+    + constructor(deps : ChannelDeps)（委托 createChannelRuntime 装配）
     --
     + connectionState : ConnectionState
     + setHost(host : PiHost)
     + setNotifier(notifier : Notifier)
     + setConfig(config : WechatApiOpts)
-    + getTerminalProcessing() : boolean
     + setTerminalProcessing(value)
     + initSession() : Promise<boolean>
     + stopPolling()
@@ -45,23 +43,13 @@ package "src/channel（编排器 + 状态 + 协作类）" {
     + handleMessage(msg, opts) : Promise<void>
     + triggerAi(msg, requestId, opts) : Promise<void>
     + onAiDone()
-    + getTypingTicket() : Promise<string | null>
-    + sendTypingStatus(status)
     + startTyping() : Promise<void>
     + stopTyping() : Promise<void>
-    + sendText(text) : Promise<void>
     + sendFile(localPath) : Promise<void>
-    + sendReply(text, maxRetries) : Promise<void>
-    + getCurrentRequestId() : string | null
+    + sendReply(text, maxRetries?) : Promise<void>
     + isRequestProcessed(id) : boolean
     + markRequestProcessed(id)
     + reset()
-    - generateRequestId() : string（委托 requestId.next()）
-    - getCredentials() : WechatCredentials | null
-    - getCurrentOpts() : WechatApiOpts | null
-    - isSlashCommand(msg) : boolean
-    - extractText(msg) : string
-    - handleSlashCommand(msg, opts) : Promise<void>
   }
 
   class ChannelState <<state>> {
@@ -83,6 +71,30 @@ package "src/channel（编排器 + 状态 + 协作类）" {
     - seq : number
     --
     + next(now?) : string（YYMMDDHHMMSSmmm + 3 位序号）
+  }
+
+  class InboundHandler <<collaborator>> {
+    - deps : InboundHandlerDeps
+    - requestId : RequestIdGenerator
+    --
+    + handle(msg, opts) : Promise<void>
+  }
+
+  class CredentialLoader <<collaborator>> {
+    - state : ChannelState
+    - logger : PluginLogger
+    --
+    + ensureSession() : Promise<boolean>
+  }
+
+  class "createChannelRuntime" as createChannelRuntime <<module>> {
+    - deps : ChannelDeps（import type）
+    --
+    + createChannelRuntime(deps) : ChannelRuntime
+  }
+
+  class "parseInbound" as parseInbound <<module>> {
+    + parseInbound(msg) : ParsedInbound
   }
 
   class PollingLoop <<collaborator>> {
@@ -131,7 +143,10 @@ package "src/channel（编排器 + 状态 + 协作类）" {
 
   class MessageRouter <<collaborator>> {
     - deps : RouterDeps
+    + queue : TurnQueue<{ msg, requestId }>
     --
+    + dispatch(msg, requestId, opts) : Promise<void>
+    + onTurnDone()
     + execute(msg, requestId, opts) : Promise<void>
     + drain() : Promise<void>
     - processMediaInBackground(msg, requestId, opts) : Promise<void>
@@ -234,13 +249,34 @@ package "注入 deps / 类型" {
     + sleep(ms) : Promise<void>
   }
   interface RouterDeps <<deps>> {
-    + queue : TurnQueue
+    + queue? : TurnQueue
     + mediaStore : MediaStore
     + mediaQueue : SerialTaskQueue
     + sender : MessageSender
     + getHost() : PiHost | null
     + getOpts() : WechatApiOpts | null
+    + isTerminalProcessing() : boolean
     + logger : PluginLogger
+  }
+  interface InboundHandlerDeps <<deps>> {
+    + state : ChannelState
+    + typing : InboundTyping
+    + router : InboundDispatch
+    + requestId : RequestIdGenerator
+    + logger : PluginLogger
+  }
+  interface CredentialLoaderDeps <<deps>> {
+    + state : ChannelState
+    + logger : PluginLogger
+  }
+  interface ChannelRuntime <<deps>> {
+    + state / logger / credentialLoader / poller
+    + typing / sender / router / inboundHandler
+  }
+  class ParsedInbound <<type>> {
+    + text : string
+    + hasText : boolean
+    + hasMedia : boolean
   }
   interface TypingDeps <<deps>> {
     + outbound : WechatOutbound
@@ -292,24 +328,29 @@ package "外部依赖" {
   }
 }
 
-' ============ 组合（Channel 构造并持有）============
+' ============ 组合（持有）============
 Channel *-- ChannelState : state
+Channel *-- CredentialLoader : credentialLoader
 Channel *-- PollingLoop : poller
-Channel *-- TurnQueue : queue
-Channel *-- SerialTaskQueue : mediaQueue
-Channel *-- MediaStore : mediaStore
 Channel *-- TypingController : typing
 Channel *-- MessageSender : sender
 Channel *-- MessageRouter : router
-Channel *-- RequestIdGenerator : requestId（generateRequestId 委托）
+Channel *-- InboundHandler : inboundHandler
+
+' 协作类拥有的对象
+MessageRouter *-- TurnQueue : queue（turn 编排唯一入口）
+InboundHandler *-- RequestIdGenerator : requestId
 
 ' ============ 构造注入 ============
+Channel ..> createChannelRuntime : 委托装配（createChannelRuntime(deps)）
 Channel ..> ChannelDeps : constructor(deps)
 ChannelDeps ..> ChannelPorts
 ChannelDeps ..> ChannelState
 ChannelDeps ..> Notifier
 ChannelDeps ..> WechatApiOpts
 ChannelDeps ..> PiHost
+createChannelRuntime ..> ChannelDeps : deps
+createChannelRuntime ..> ChannelRuntime : returns
 
 ' ============ 协作类 → deps → 端口 ============
 PollingLoop ..> PollingLoopDeps : deps
@@ -324,6 +365,17 @@ RouterDeps ..> SerialTaskQueue
 RouterDeps ..> MessageSender
 RouterDeps ..> PiHost
 RouterDeps ..> WechatApiOpts
+MessageRouter ..> parseInbound : 使用
+parseInbound ..> ParsedInbound : returns
+
+InboundHandler ..> InboundHandlerDeps : deps
+InboundHandlerDeps ..> ChannelState
+InboundHandlerDeps ..> RequestIdGenerator
+InboundHandlerDeps ..> TypingController
+InboundHandlerDeps ..> MessageRouter
+
+CredentialLoader ..> CredentialLoaderDeps : deps
+CredentialLoaderDeps ..> ChannelState
 
 TypingController ..> TypingDeps : deps
 TypingDeps ..> WechatOutbound
@@ -346,25 +398,47 @@ adapters ..> WechatOutbound : 实现
 adapters ..> WechatMedia : 实现
 adapters ..> WechatAuth : 实现
 
-' ============ Channel → 外部依赖 ============
+' ============ 协作类 / Channel → 外部依赖 ============
 Channel ..> PiHost : setHost / state.host
-Channel ..> storage
-Channel ..> shared
+Channel ..> shared : 日志接口（PluginLogger）
+createChannelRuntime ..> shared : 配置 / 日志 / 时间
+InboundHandler ..> storage : saveContextToken
+CredentialLoader ..> storage : 读取凭证 / context token
 index ..> adapters : 组装端口实现
 index ..> Channel : new Channel({ state, ports, logger })
 index ..> ChannelState : new ChannelState()
-Channel ..> WechatCredentials : getCredentials / getOpts（委托 state）
+ChannelState ..> WechatCredentials : getCredentials / getOpts
 
 ' ============ 说明 ============
 note right of Channel
-  编排器：
-  - 构造时创建全部协作类（组合关系，含 RequestIdGenerator）
-  - 只依赖 PiHost / WechatInbound / WechatOutbound / WechatMedia 端口
-  - ports 为必填，由组合根 index 组装真实实现（及 ChannelState）后注入
+  facade：
+  - 构造函数仅调用 createChannelRuntime(deps) 并把结果赋给自身字段
+  - 只持有 state / logger / credentialLoader / poller / typing / sender / router / inboundHandler
+  - 对外仅委托：handleMessage → InboundHandler，triggerAi/onAiDone → MessageRouter，
+    initSession → CredentialLoader，startPolling/stopPolling → PollingLoop，
+    startTyping/stopTyping → TypingController，sendFile/sendReply → MessageSender
+  - 不直接持有 queue / mediaStore / mediaQueue / sleep / requestId（由工厂装配，或由协作类拥有）
+  - requestId 由 InboundHandler 持有的 RequestIdGenerator 生成，不保存在 ChannelState 中
   - 无模块级单例；createExtension() 每次新建独立实例
-  - requestId 由 RequestIdGenerator 生成，不保存在 ChannelState 中
-  - 已删除 configure() / cleanupProcessedRequests()（S6）：requestId 追踪
-    迁出到 RequestIdGenerator，ChannelState 收敛为凭证 + 依赖 + 终端标志
+end note
+
+note right of InboundHandler
+  入站处理：requestId = requestId.next() → 按需同步 contextToken
+  （typing.invalidateTicket + 条件 storage.saveContextToken）→ router.dispatch。
+end note
+
+note right of CredentialLoader
+  从 storage 读取单用户凭证写入 ChannelState（原 Channel.initSession），
+  poller 与 Channel.initSession 均委托此协作类。
+end note
+
+note right of createChannelRuntime
+  内部装配工厂：创建全部协作类并注入回调（行为与抽取前的 Channel
+  构造函数逐字等价）；返回 ChannelRuntime 供 Channel 持有。
+end note
+
+note bottom of parseInbound
+  纯函数：把 item_list 归一为 { text, hasText, hasMedia }，供 MessageRouter 复用。
 end note
 
 note right of ChannelState

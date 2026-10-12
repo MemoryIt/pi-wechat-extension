@@ -15,7 +15,7 @@
 - **用例层与事件翻译分离**：`src/application/` 承载用例（`SessionService` 会话生命周期、`ReplyService` 回复发送决策），`bridge` 只做 pi 事件的翻译与委托；application 依赖自身 DTO/窄接口、`storage` 与 `ports`，不感知 pi / vendor / 具体 `Channel`。
 - **适配器唯一接触 vendor**：所有对迁移自 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin) 的 `api/ auth/ cdn/ media/ messaging/ util/` 的调用都收敛在 `src/adapters/`（及两个再导出边界）。
 - **显式组合根**：`src/index.ts` 的 `createExtension(deps?)` 显式组装 `PiHost + Channel + WechatAuth`，不依赖模块级单例。
-- **纯协作类可单测**：`queue` / `media-store` / `router` / `typing` / `sender` / `polling` 通过依赖注入的窄接口工作，可脱离 `Channel` 独立单测。
+- **纯协作类可单测**：`queue` / `media-store` / `router` / `typing` / `sender` / `polling` / `inbound-parser` / `inbound-handler` / `credential-loader` 通过依赖注入的窄接口工作，可脱离 `Channel` 独立单测。
 
 ## 2. 分层与依赖方向
 
@@ -23,7 +23,9 @@
 src/index.ts (组合根 createExtension)
    ├──→ bridge/*         pi.on 事件、命令、工具（事件翻译，委托 application 用例）
    ├──→ application/*    SessionService / ReplyService + 窄接口与 DTO
-   ├──→ channel/*        Channel + 协作类 + ChannelState + RequestIdGenerator
+   ├──→ channel/*        Channel(facade) + create-channel（内部装配工厂）+ 协作类
+   │                     (inbound-parser / inbound-handler / credential-loader / router / polling /
+   │                      queue / media-store / typing / sender) + ChannelState + RequestIdGenerator
    ├──→ adapters/*       inbound / outbound / media / auth 默认工厂（组装端口，ACL）
    └──→ ports/*          端口类型
 
@@ -44,6 +46,7 @@ storage     ──→ shared/*
 - **隔离 vendor**：除 `src/adapters/**`、`src/ports/types.ts`、`src/shared/redact.ts`、`src/shared/file-logger.ts` 外，自写代码不 import `api/ auth/ cdn/ media/ messaging/ util/`。vendor 的耦合细节见 [`vendor-constraints.md`](vendor-constraints.md)（RF-5 产出）。
 - **通道不得回溯旧门面**：旧的引擎目录已删除，`channel` 只依赖端口与协作类。
 - **组合根组装端口**：`src/index.ts` 创建 `ChannelState` 与 `inbound/outbound/media` adapters，并把同一 state 注入 outbound 的 `getCredentials` 与 `Channel`；`channel` 只依赖 `ports/*`、`storage/*`、`shared/*`，不 import adapters。
+- **TurnQueue 归属**：`TurnQueue` 由 `MessageRouter` 拥有（turn 编排唯一入口）；`Channel` 不再直接持有队列，仅委托 `MessageRouter.dispatch` / `onTurnDone`。
 
 ## 3. 模块职责与关键导出
 
@@ -91,12 +94,16 @@ storage     ──→ shared/*
 
 | 模块 | 职责 | 关键导出 |
 |------|------|----------|
-| `src/channel/channel.ts` | 粗粒度编排器：持有 `ChannelState` 与全部协作类，装配完整通道；对 bridge / application / tool 暴露公共方法 | `Channel`、`ChannelDeps`、`ChannelPorts` |
+| `src/channel/channel.ts` | 通道 facade：构造函数委托 `createChannelRuntime(deps)` 完成装配，仅持有运行时协作类并对外委托行为；对 bridge / application / tool 暴露公共方法 | `Channel`、`ChannelDeps`、`ChannelPorts` |
+| `src/channel/create-channel.ts` | 内部装配工厂：`createChannelRuntime(deps)` 创建各协作类并互相注入回调，返回 `ChannelRuntime`（行为与抽取前的 `Channel` 构造函数逐字等价） | `createChannelRuntime`、`ChannelRuntime` |
+| `src/channel/inbound-handler.ts` | 入站处理器：生成 requestId、按需同步 `contextToken`（失效 typing ticket + 条件持久化），最后 `router.dispatch` | `InboundHandler`、`InboundHandlerDeps`、`createInboundHandler` |
+| `src/channel/inbound-parser.ts` | 入站消息解析纯函数：把 `item_list` 归一为 `{ text, hasText, hasMedia }` | `parseInbound`、`ParsedInbound` |
+| `src/channel/credential-loader.ts` | 单用户凭证加载协作类：从 `storage` 读取凭证写入 `ChannelState`（原 `Channel.initSession`） | `CredentialLoader`、`CredentialLoaderDeps`、`createCredentialLoader` |
 | `src/channel/state.ts` | 运行时会话状态：单用户凭证、运行期注入依赖（config/host/notifier）、终端处理标志（requestId 追踪已迁出到 `RequestIdGenerator`） | `ChannelState`、`Notifier` |
-| `src/channel/request-id.ts` | 请求 ID 生成器：`YYMMDDHHMMSSmmm` + 3 位同毫秒序号，独立追踪同毫秒唯一性 | `RequestIdGenerator`、`next(now?)` |
+| `src/channel/request-id.ts` | 请求 ID 生成器：`YYMMDDHHMMSSmmm` + 3 位同毫秒序号，独立追踪同毫秒唯一性；现由 `InboundHandler` 持有 | `RequestIdGenerator`、`next(now?)` |
 | `src/channel/polling.ts` | 长轮询循环 / 退避 / abort-race / 重入守卫 / generation 令牌 / 连接状态 | `PollingLoop`、`PollingLoopDeps`、`ConnectionState`、`POLL_ABORTED`、`DEFAULT_LONG_POLL_TIMEOUT_MS`、`StartPollingOpts` |
 | `src/channel/queue.ts` | 轮次队列纯状态（FIFO / 忙闲 / 去重）+ 后台串行任务队列 | `TurnQueue`、`SerialTaskQueue` |
-| `src/channel/router.ts` | turn 执行（文本注入 / 媒体后台）+ 队列排空 | `MessageRouter`、`RouterDeps`、`RouterTurnOptions` |
+| `src/channel/router.ts` | turn 编排唯一入口：**拥有 `TurnQueue`**，提供 `dispatch` / `onTurnDone` / `execute` / `drain`（文本注入 / 媒体后台） | `MessageRouter`、`RouterDeps`、`RouterTurnOptions` |
 | `src/channel/media-store.ts` | 媒体落盘、ISO 周目录、魔数/MIME 识别、批量下载 | `MediaStore`、`MediaStoreOptions`、`detectFileType`、`CONTENT_TYPE_EXT_MAP`、`getISOWeek`、`getCurrentWeekFolder` |
 | `src/channel/typing.ts` | typing ticket 缓存（绑定 contextToken）+ keepalive | `TypingController`、`TypingDeps` |
 | `src/channel/sender.ts` | 文本 / 文件出站发送 + 重试 | `MessageSender`、`SenderDeps` |
@@ -119,6 +126,7 @@ storage     ──→ shared/*
 
 ### 4.1 turn 识别与 `agent_settled` 发送（决策在 `ReplyService`）
 
+- 入站路径：`PollingLoop.onMessage` → `InboundHandler.handle()`（生成 requestId + 同步 `contextToken`）→ `MessageRouter.dispatch()`；忙或终端处理中入队，否则进入 `execute()`。
 - 微信文本 turn 在 `MessageRouter.execute()` 中先 `host.appendEntry("wechat_meta", { requestId })`，再 `host.sendUserMessage(content, { deliverAs: "followUp" })`。
 - `bridge/events.ts` 把 `agent_settled` 翻译成 `SettledContext`（`fromWechat` / `requestId` / `replyText` / `metaText` + `notify` 回调），发送决策交给 `application/reply` 的 `ReplyService.handleSettled()`；bridge 本身不承载发送逻辑。
 - 每轮身份不做跨轮存储：
@@ -139,9 +147,9 @@ storage     ──→ shared/*
 
 ### 4.3 `TurnQueue` 与 requestId 唯一性
 
-- `TurnQueue<T>`：`pending` FIFO、`busy`、`currentRequestId`、`processed: Map<id, ts>`。
+- `TurnQueue<T>`（由 `MessageRouter` 拥有）：`pending` FIFO、`busy`、`currentRequestId`、`processed: Map<id, ts>`。
 - `markRequestProcessed` 每 50 次触发一次清理（删除 1 小时前的记录）。
-- requestId = `formatTimestamp()`（15 位）+ 3 位同毫秒序号，保证同毫秒内唯一（D13）。生成收拢在 `channel/request-id.ts` 的 `RequestIdGenerator`（`Channel` 私有 `generateRequestId()` 委托 `requestId.next()`），`ChannelState` 不再承载 requestId 追踪。
+- requestId = `formatTimestamp()`（15 位）+ 3 位同毫秒序号，保证同毫秒内唯一（D13）。生成收拢在 `channel/request-id.ts` 的 `RequestIdGenerator`；现由 `InboundHandler` 持有，并在 `handle()` 中调用 `next()`。`ChannelState` 与 `Channel` 均不再承载 requestId 追踪。
 - `SerialTaskQueue` 用 promise 链保证后台任务串行；单个任务抛错经 `onError` 上报且不阻断后续。
 
 ### 4.4 媒体后台串行（B5）
@@ -156,7 +164,7 @@ storage     ──→ shared/*
 - `TypingController` 经 `WechatOutbound` 端口取 `typing_ticket`，缓存 TTL 60s 且**绑定 contextToken**（token 变化立即失效，D16）。
 - `startKeepalive()` 先发 `typing=1`，再 `setInterval(8000ms)` 刷新；定时器 `unref()`，不阻止进程退出。
 - `message_end`/`agent_end`/`agent_settled` 停止 keepalive；发送失败且错误含 "ticket" 时清缓存。
-- `Channel.handleMessage()` 在 contextToken 变化时调用 `typing.invalidateTicket()` 并持久化新 token。
+- `InboundHandler.handle()` 在 contextToken 变化时调用 `typing.invalidateTicket()` 并持久化新 token。
 
 ### 4.6 发送与重试
 
@@ -173,7 +181,7 @@ storage     ──→ shared/*
 
 - `PiHost` 是 `ExtensionAPI` 的窄接口（仅 `appendEntry` / `sendUserMessage` / `sendMessage`）；`index.ts` 的 `piToHost()` 负责适配，`Channel.setHost()` / `state.host` 持有，测试无需实现整个 `ExtensionAPI`（R1）。
 - `createExtension(deps?)` 接受 fake `Channel` / `WechatAuth`；默认每次调用创建独立 `Channel`，不共享模块单例。
-- `Channel` 构造函数接受 `ChannelDeps`（`state` / `host` / `config` / `notifier` / `ports` / `logger` / `sleep`）；`ports` 提供 `{ inbound?, outbound?, media? }` 供测试注入 fake。
+- `Channel` 构造函数接受 `ChannelDeps`（`state` / `host` / `config` / `notifier` / `ports` / `logger` / `sleep`），并委托内部工厂 `createChannelRuntime(deps)` 完成装配；`ports` 提供 `{ inbound, outbound, media }`（必填）供测试注入 fake。
 - 协作类各自接受窄 deps：`PollingLoopDeps` / `RouterDeps` / `TypingDeps` / `SenderDeps` / `MediaStoreOptions`。
 
 ### 4.9 会话生命周期（`application/session`）
@@ -266,7 +274,8 @@ storage     ──→ shared/*
 │   ├── index.ts          # 组合根：createExtension(deps?) 组装 application + Channel + adapters + WechatAuth
 │   ├── application/      # 用例层：reply（ReplyService）/ session（SessionService）/ types（DTO + 窄接口）
 │   ├── bridge/           # pi 侧适配（事件翻译）：events / turn / meta / commands / session-ui / tool-send-file
-│   ├── channel/          # 通道核心：channel / state / request-id / polling / queue / router / media-store / typing / sender
+│   ├── channel/          # 通道核心：channel（facade）/ create-channel（装配）/ inbound-parser / inbound-handler /
+│   │                     #   credential-loader / state / request-id / polling / queue / router / media-store / typing / sender
 │   ├── ports/            # 端口接口：inbound / outbound / media / auth / pi-host / types
 │   ├── adapters/         # 微信侧薄包装（ACL）：inbound / outbound / media / auth（唯一接触 vendor）
 │   ├── shared/           # 基础：config / logger / time / paths / types / redact(边界) / file-logger(边界)
@@ -282,7 +291,7 @@ storage     ──→ shared/*
 | 层 | 目录 | 被测对象 |
 |----|------|----------|
 | L1 纯逻辑 | `tests/unit` | `shared/config`、`shared/logger`、`storage/state`、端口适配器 `adapters`、`channel/state`、依赖清单 |
-| L2 通道 | `tests/channel` | 直接测 `Channel`（注入端口 fake）+ 纯协作类 `queue` / `media-store` / `router` |
+| L2 通道 | `tests/channel` | 直接测 `Channel`（注入端口 fake）+ 纯协作类 `queue` / `media-store` / `router` / `typing` / `inbound-parser` / `inbound-handler` / `credential-loader` |
 | L3 事件桥接 | `tests/bridge` | `index` 的事件接线、`turn`、`meta`（注入 fake `Channel` / `WechatAuth`） |
 | 集成 | `tests/integration` | `channel-flow.test.ts`：端到端通道流转 |
 
