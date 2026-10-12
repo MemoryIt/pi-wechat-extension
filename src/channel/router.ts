@@ -51,7 +51,13 @@ export class MessageRouter {
       logger.debug(`Media message detected, acknowledging and processing in background...`);
 
       // B5：立即 ack（不含路径），下载/落盘放到后台串行队列，不阻塞轮询主循环。
-      await this.deps.sender.sendText("媒体文件已收到，正在保存…");
+      // F6：ack 失败只记录日志，不得抛给调用方，也不影响后续入队/标记/排空。
+      try {
+        await this.deps.sender.sendText("媒体文件已收到，正在保存…");
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error(`Media ack failed (requestId=${requestId}):`, errMsg);
+      }
 
       mediaQueue.enqueue(() => this.processMediaInBackground(msg, requestId, opts));
 

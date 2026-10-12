@@ -589,3 +589,43 @@ test("B5 目标：后台媒体任务串行，第 2 条等第 1 条 resolve 后�
   expect(contents[0]).toContain("/tmp/media/1.png");
   expect(contents[1]).toContain("/tmp/media/2.png");
 });
+
+// ---------------------------------------------------------------------------
+// F6：媒体 ack 失败不阻断同批次后续文本与 cursor
+// ---------------------------------------------------------------------------
+
+test("F6 目标：媒体 ack 抛错后同批次文本仍交给宿主且 cursor 已持久化", async () => {
+  const image = {
+    context_token: "CTX-1",
+    item_list: [{ type: MessageItemType.IMAGE, image_item: {} }],
+  };
+  const text = textMessage("after images");
+
+  let call = 0;
+  const resolvers: Array<(v: unknown) => void> = [];
+  inboundMock.getUpdates.mockImplementation(() => {
+    call += 1;
+    if (call === 1) {
+      // 一个批次：先图片、后文本
+      return Promise.resolve({ messages: [image, text], cursor: "cursor-f6" });
+    }
+    return new Promise((res) => resolvers.push(res));
+  });
+
+  // 媒体 ack（outbound.sendText 第一次调用）失败
+  outboundMock.sendText.mockRejectedValueOnce(new Error("ack failed"));
+
+  const p = channel.startPolling(opts);
+
+  // ack 失败后：同批次的文本消息仍应到达宿主
+  await waitFor(() => pi.calls.sendUserMessage.length > 0);
+  await sleep(30);
+
+  expect(pi.calls.sendUserMessage.some(([content]) => String(content).includes("after images"))).toBe(true);
+  // cursor 已按批次推进并持久化（不因 ack 失败而回退/停留）
+  expect(await storage.loadSyncCursor("acc1")).toBe("cursor-f6");
+
+  channel.stopPolling();
+  resolvers.splice(0).forEach((r) => r({ messages: [], cursor: "cursor-f6" }));
+  await p;
+});

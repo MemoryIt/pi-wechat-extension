@@ -155,6 +155,26 @@ test("router 媒体后台：下载完成后写 wechat_media history", async () =
   expect(callOpts).toEqual({ triggerTurn: false, deliverAs: "followUp" });
 });
 
+test("F6 目标：媒体 ack 失败不抛，仍标记处理并照常入后台队列", async () => {
+  const h = makeHarness();
+  h.sender.sendText.mockImplementation(async () => {
+    throw new Error("ack failed");
+  });
+  h.mediaStore.downloadAll.mockResolvedValue([]);
+
+  // ack 失败不得冒泡到调用方
+  await expect(h.router.execute(mediaMsg(), "M3", opts)).resolves.toBeUndefined();
+
+  expect(h.loggerErrors.some((e) => e.includes("Media ack failed"))).toBe(true);
+  // 仍标记已处理
+  expect(h.queue.isRequestProcessed("M3")).toBe(true);
+  expect(h.queue.isBusy()).toBe(false);
+
+  // 仍入后台队列，任务照常执行
+  await sleep(30);
+  expect(h.mediaStore.downloadAll).toHaveBeenCalledTimes(1);
+});
+
 // ---------------------------------------------------------------------------
 // drain
 // ---------------------------------------------------------------------------
@@ -180,11 +200,11 @@ test("router.drain：取队首执行（20ms 后）", async () => {
 
 test("router.drain：execute rejection 被捕获并释放状态", async () => {
   const h = makeHarness();
-  // host.sendUserMessage 抛错 -> execute 内部吞掉；再单独制造 execute 抛错：
-  // sender.sendText 抛错会让媒体分支的 execute 直接 reject。
-  h.sender.sendText.mockImplementation(async () => {
+  // F6 后媒体 ack 失败已在 execute 内部被隔离，不再能让媒体分支拒绝。
+  // 这里直接让 execute 拒绝，专门验证 drain 对 execute rejection 的兜底处理。
+  h.router.execute = mock(async (_msg: unknown, _requestId: string, _o: unknown) => {
     throw new Error("send boom");
-  });
+  }) as unknown as typeof h.router.execute;
   h.queue.enqueue({ msg: mediaMsg(), requestId: "Q2" });
 
   await h.router.drain();
