@@ -1,41 +1,33 @@
 /**
  * channel/channel.ts - 微信通道粗粒度编排器
  *
- * 承载单用户通道的编排逻辑：持有 `ChannelState` 与各协作类
- * （`PollingLoop` / `SerialTaskQueue` / `MediaStore` /
- * `TypingController` / `MessageSender` / `MessageRouter` / `InboundHandler`），
- * 并装配为完整通道。
+ * 承载单用户通道的编排逻辑：构造函数委托 `createChannelRuntime` 完成装配，
+ * 自身只持有运行时协作类（`PollingLoop` / `TypingController` / `MessageSender` /
+ * `MessageRouter` / `InboundHandler` / `CredentialLoader`）并对外委托行为。
  * turn 队列由 `MessageRouter` 拥有并集中管理状态迁移（见 `router.ts`）。
+ *
+ * 装配细节（`new` 与回调注入）见 `create-channel.ts`；本类不直接构造协作类。
  *
  * 依赖方向单向：`channel/*` 只依赖 `ports/`、`storage/` 与 `shared/`，不 import
  * 微信侧适配层或 `../engine/*`；宿主依赖使用 `ports/pi-host` 的 `PiHost`。
  * 端口实现与 `ChannelState` 由组合根（`src/index.ts`）组装后经 `ChannelDeps.ports` 注入。
  */
 
-import type { WeixinMessage, WechatCredentials } from "../ports/types.js";
+import type { WeixinMessage } from "../ports/types.js";
 import type { WechatInbound } from "../ports/inbound.js";
 import type { WechatOutbound } from "../ports/outbound.js";
 import type { WechatMedia } from "../ports/media.js";
-import * as storage from "../storage/state.js";
-import { isDebugEnabled } from "../shared/config.js";
-import { sleep as defaultSleep } from "../shared/time.js";
 import type { WechatApiOpts } from "../shared/types.js";
 import type { PiHost } from "../ports/pi-host.js";
 import type { PluginLogger } from "../shared/logger.js";
-import { createLogger } from "../shared/logger.js";
-import { ChannelState } from "./state.js";
-import type { Notifier } from "./state.js";
-import { RequestIdGenerator } from "./request-id.js";
-import { PollingLoop } from "./polling.js";
-import type { ConnectionState } from "./polling.js";
-import { SerialTaskQueue } from "./queue.js";
-import { TypingController } from "./typing.js";
-import { MessageSender } from "./sender.js";
-import { MessageRouter } from "./router.js";
-import { MediaStore } from "./media-store.js";
-import { InboundHandler } from "./inbound-handler.js";
-import { createCredentialLoader } from "./credential-loader.js";
+import type { ChannelState, Notifier } from "./state.js";
+import type { PollingLoop, ConnectionState } from "./polling.js";
+import type { TypingController } from "./typing.js";
+import type { MessageSender } from "./sender.js";
+import type { MessageRouter } from "./router.js";
+import type { InboundHandler } from "./inbound-handler.js";
 import type { CredentialLoader } from "./credential-loader.js";
+import { createChannelRuntime } from "./create-channel.js";
 
 /** 微信边界端口（生产由组合根注入真实端口实现；测试注入 fake）。 */
 export interface ChannelPorts {
@@ -59,88 +51,24 @@ export class Channel {
   readonly state: ChannelState;
 
   private readonly logger: PluginLogger;
-  private readonly sleep: (ms: number) => Promise<void>;
   private readonly credentialLoader: CredentialLoader;
   private readonly poller: PollingLoop;
 
-  private readonly mediaStore: MediaStore;
-  private readonly mediaQueue: SerialTaskQueue;
   private readonly typing: TypingController;
   private readonly sender: MessageSender;
   private readonly router: MessageRouter;
   private readonly inboundHandler: InboundHandler;
 
   constructor(deps: ChannelDeps) {
-    this.state = deps.state ?? new ChannelState();
-    if (deps.host) this.state.host = deps.host;
-    if (deps.config) this.state.config = deps.config;
-    if (deps.notifier) this.state.notifier = deps.notifier;
-
-    this.logger = deps.logger ?? createLogger({ isDebugEnabled: () => isDebugEnabled() });
-    this.sleep = deps.sleep ?? defaultSleep;
-    this.mediaQueue = new SerialTaskQueue((err) =>
-      this.logger.error("Media background task failed", err),
-    );
-
-    const { inbound, outbound, media } = deps.ports;
-
-    this.mediaStore = new MediaStore({
-      media,
-      log: (...a: unknown[]) => this.logger.debug(String(a[0] ?? ""), ...a.slice(1)),
-      errLog: (...a: unknown[]) => this.logger.error(String(a[0] ?? ""), ...a.slice(1)),
-    });
-
-    this.typing = new TypingController({
-      outbound,
-      getContextToken: () => this.state.contextToken,
-      debug: this.logger.debug.bind(this.logger),
-      error: this.logger.error.bind(this.logger),
-    });
-    this.sender = new MessageSender({
-      outbound,
-      canSend: () => this.getCredentials() !== null,
-      debug: this.logger.debug.bind(this.logger),
-      error: this.logger.error.bind(this.logger),
-    });
-
-    this.router = new MessageRouter({
-      mediaStore: this.mediaStore,
-      mediaQueue: this.mediaQueue,
-      sender: this.sender,
-      getHost: () => this.state.host,
-      getOpts: () => this.getCurrentOpts(),
-      isTerminalProcessing: () => this.state.isTerminalMessageProcessing,
-      logger: this.logger,
-    });
-
-    this.inboundHandler = new InboundHandler({
-      state: this.state,
-      typing: this.typing,
-      router: this.router,
-      requestId: new RequestIdGenerator(),
-      logger: this.logger,
-    });
-
-    this.credentialLoader = createCredentialLoader({
-      state: this.state,
-      logger: this.logger,
-    });
-
-    this.poller = new PollingLoop({
-      ensureSession: () => this.credentialLoader.ensureSession(),
-      getAccountId: () => this.state.accountId,
-      loadCursor: (accountId) => storage.loadSyncCursor(accountId),
-      saveCursor: (accountId, cursor) => storage.saveSyncCursor(accountId, cursor),
-      inbound,
-      onMessage: (msg, opts) => this.inboundHandler.handle(msg, opts),
-      onNeedsRelogin: () => {
-        this.logger.debug("Session expired, needs relogin");
-        this.state.notifier?.("微信登录已失效，请执行 /wechat login 重新登录", "error");
-      },
-      debug: this.logger.debug.bind(this.logger),
-      error: this.logger.error.bind(this.logger),
-      sleep: this.sleep,
-    });
+    const runtime = createChannelRuntime(deps);
+    this.state = runtime.state;
+    this.logger = runtime.logger;
+    this.credentialLoader = runtime.credentialLoader;
+    this.poller = runtime.poller;
+    this.typing = runtime.typing;
+    this.sender = runtime.sender;
+    this.router = runtime.router;
+    this.inboundHandler = runtime.inboundHandler;
   }
 
   // ============== 公共 API（facade for bridge / application / tests）==============
@@ -278,18 +206,5 @@ export class Channel {
     this.poller.reset();
 
     this.logger.debug("Channel state reset");
-  }
-
-  // ============== 私有工具 ==============
-
-  private getCurrentOpts(): WechatApiOpts | null {
-    return this.state.getOpts();
-  }
-
-  /**
-   * 组装当前单用户凭证；任一缺失返回 null。
-   */
-  private getCredentials(): WechatCredentials | null {
-    return this.state.getCredentials();
   }
 }
