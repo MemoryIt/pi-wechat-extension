@@ -92,10 +92,6 @@ export class Channel {
     return this.poller.connectionState;
   }
 
-  getTerminalProcessing(): boolean {
-    return this.state.isTerminalMessageProcessing;
-  }
-
   setTerminalProcessing(value: boolean): void {
     this.state.isTerminalMessageProcessing = value;
   }
@@ -141,16 +137,6 @@ export class Channel {
 
   // ============== Typing 相关（单用户）==============
 
-  /** 获取 typing_ticket（单用户）。 */
-  async getTypingTicket(): Promise<string | null> {
-    return this.typing.getTicket();
-  }
-
-  /** 发送 typing 状态（单用户）。 */
-  async sendTypingStatus(status: 1 | 2): Promise<void> {
-    return this.typing.sendStatus(status);
-  }
-
   /** 开始 typing keepalive（单用户）。 */
   async startTyping(): Promise<void> {
     return this.typing.startKeepalive();
@@ -163,11 +149,6 @@ export class Channel {
 
   // ============== 发送消息（单用户）==============
 
-  /** 发送纯文字消息（底层官方文本发送接口）。 */
-  async sendText(text: string): Promise<void> {
-    return this.sender.sendText(text);
-  }
-
   /** 向微信发送本地文件（底层官方媒体发送接口，自动路由类型）。 */
   async sendFile(localPath: string): Promise<void> {
     return this.sender.sendFile(localPath);
@@ -179,10 +160,6 @@ export class Channel {
   }
 
   // ============== 防重相关 ==============
-
-  getCurrentRequestId(): string | null {
-    return this.router.queue.getCurrentRequestId();
-  }
 
   isRequestProcessed(requestId: string): boolean {
     return this.router.queue.isRequestProcessed(requestId);

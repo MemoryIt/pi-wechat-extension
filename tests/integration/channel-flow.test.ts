@@ -124,19 +124,24 @@ test("入站文本：handleMessage 写 wechat_meta + sendUserMessage；onAiDone 
 
   expect(fakeHost.calls.appendEntry).toHaveLength(1);
   expect(fakeHost.calls.appendEntry[0][0]).toBe("wechat_meta");
-  expect(fakeHost.calls.appendEntry[0][1]).toEqual({ requestId: channel.getCurrentRequestId() });
+  // 本轮 requestId 一致：从 appendEntry 捕获记录值，经 queue 观察当前值
+  const queue = (channel as unknown as {
+    router: { queue: { getCurrentRequestId(): string | null; size: number } };
+  }).router.queue;
+  const recordedRequestId = (fakeHost.calls.appendEntry[0][1] as { requestId: string }).requestId;
+  expect(recordedRequestId).toBe(queue.getCurrentRequestId());
   expect(fakeHost.calls.sendUserMessage).toHaveLength(1);
   expect(fakeHost.calls.sendUserMessage[0][0]).toBe("hello");
   expect(fakeHost.calls.sendUserMessage[0][1]).toEqual({ deliverAs: "followUp" });
   // 已交给 agent：保持 busy 等待 onAiDone
-  expect(channel.getCurrentRequestId()).not.toBeNull();
+  expect(queue.getCurrentRequestId()).not.toBeNull();
 
   // 忙时第二条入队；onAiDone 后释放并排空
   await channel.handleMessage(textMessage("second"), opts);
-  expect((channel as unknown as { router: { queue: { size: number } } }).router.queue.size).toBe(1);
+  expect(queue.size).toBe(1);
 
   channel.onAiDone();
-  expect(channel.getCurrentRequestId()).toBeNull();
+  expect(queue.getCurrentRequestId()).toBeNull();
   await waitFor(() => fakeHost.calls.sendUserMessage.length === 2);
   expect(fakeHost.calls.sendUserMessage[1][0]).toBe("second");
 });

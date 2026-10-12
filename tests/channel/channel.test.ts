@@ -7,7 +7,9 @@
  * 覆盖：D3 轮询重入、D6 同步抛错被吞、D7 队列 rejection 未处理、
  *       D9 未传 AbortSignal、D14 fileName 被忽略、
  *       CS-3 slash 拦截移除后的 "/foo" 行为回归、
- *       D16 typing ticket 缓存不失效 / timer 泄漏。
+ *       D16b typing keepalive timer 泄漏。
+ * （D16 typing ticket 缓存语义已迁移为直接单测 `TypingController`，
+ * 见 tests/channel/typing.test.ts。）
  * （D13「同毫秒 requestId 唯一」：requestId 生成已随 `InboundHandler` 迁出，
  * 不变量由 tests/channel/request-id.test.ts 确定性覆盖。）
  */
@@ -298,60 +300,9 @@ test("CS-3 行为变更：'/' 开头的消息不再被拦截，作为普通消�
 });
 
 // ---------------------------------------------------------------------------
-// D16：typing ticket 缓存不随 contextToken 失效
+// D16（typing ticket 缓存绑定 contextToken / TTL / ticket 报错清缓存）已迁移为
+// 直接单测 `TypingController`：见 tests/channel/typing.test.ts。
 // ---------------------------------------------------------------------------
-
-test("D16 目标：contextToken 变化后应重新获取 typing ticket", async () => {
-  await channel.initSession();
-  outboundMock.getTypingTicket.mockResolvedValue("T1");
-
-  const t1 = await channel.getTypingTicket();
-  expect(t1).toBe("T1");
-
-  (channel as unknown as AnyChannel).state.contextToken = "CTX-NEW";
-  outboundMock.getTypingTicket.mockResolvedValue("T2");
-
-  const t2 = await channel.getTypingTicket();
-  expect(t2).toBe("T2");
-  expect(outboundMock.getTypingTicket).toHaveBeenCalledTimes(2);
-});
-
-test("D16 目标：ticket 缓存 60s TTL 内命中、过期后重新获取", async () => {
-  await channel.initSession();
-  outboundMock.getTypingTicket.mockResolvedValue("T1");
-
-  expect(await channel.getTypingTicket()).toBe("T1");
-  // TTL 内命中缓存
-  expect(await channel.getTypingTicket()).toBe("T1");
-  expect(outboundMock.getTypingTicket).toHaveBeenCalledTimes(1);
-
-  const realNow = Date.now;
-  Date.now = () => realNow() + 61_000;
-  try {
-    outboundMock.getTypingTicket.mockResolvedValue("T2");
-    expect(await channel.getTypingTicket()).toBe("T2");
-  } finally {
-    Date.now = realNow;
-  }
-  expect(outboundMock.getTypingTicket).toHaveBeenCalledTimes(2);
-});
-
-test("D16 目标：sendTyping 报错含 'ticket' 时清空缓存并重新获取", async () => {
-  await channel.initSession();
-  outboundMock.getTypingTicket.mockResolvedValue("T1");
-
-  await channel.sendTypingStatus(1);
-  expect(outboundMock.sendTyping).toHaveBeenCalledWith(1, "T1");
-
-  // 发送报错含 "ticket" → 清空缓存
-  outboundMock.sendTyping.mockRejectedValueOnce(new Error("invalid typing_ticket"));
-  await channel.sendTypingStatus(1);
-
-  // 缓存已清 → 下一次 getTypingTicket 重新取
-  outboundMock.getTypingTicket.mockResolvedValue("T2");
-  expect(await channel.getTypingTicket()).toBe("T2");
-  expect(outboundMock.getTypingTicket).toHaveBeenCalledTimes(2);
-});
 
 // ---------------------------------------------------------------------------
 // D16b：typing keepalive 的 interval 未 unref
