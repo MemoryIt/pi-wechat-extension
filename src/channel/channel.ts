@@ -32,6 +32,8 @@ import { TypingController } from "./typing.js";
 import { MessageSender } from "./sender.js";
 import { MessageRouter } from "./router.js";
 import { MediaStore } from "./media-store.js";
+import { createCredentialLoader } from "./credential-loader.js";
+import type { CredentialLoader } from "./credential-loader.js";
 
 /** 微信边界端口（生产由组合根注入真实端口实现；测试注入 fake）。 */
 export interface ChannelPorts {
@@ -56,6 +58,7 @@ export class Channel {
 
   private readonly logger: PluginLogger;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly credentialLoader: CredentialLoader;
   private readonly poller: PollingLoop;
 
   private readonly mediaStore: MediaStore;
@@ -108,8 +111,13 @@ export class Channel {
       logger: this.logger,
     });
 
+    this.credentialLoader = createCredentialLoader({
+      state: this.state,
+      logger: this.logger,
+    });
+
     this.poller = new PollingLoop({
-      ensureSession: () => this.initSession(),
+      ensureSession: () => this.credentialLoader.ensureSession(),
       getAccountId: () => this.state.accountId,
       loadCursor: (accountId) => storage.loadSyncCursor(accountId),
       saveCursor: (accountId, cursor) => storage.saveSyncCursor(accountId, cursor),
@@ -156,27 +164,10 @@ export class Channel {
 
   /**
    * 初始化单用户凭证（原 initSingleUser）。
-   * 从 storage 载入凭证到 state；session_start 时调用。
+   * 委托 `CredentialLoader`；签名与行为保持不变，session_start 时调用。
    */
   async initSession(): Promise<boolean> {
-    const credentials = await storage.getSingleUserCredentials();
-    if (!credentials) {
-      this.logger.error("No logged in account found");
-      return false;
-    }
-
-    this.state.userId = credentials.userId;
-    this.state.accountId = credentials.accountId;
-
-    this.state.contextToken = await storage.getSingleUserContextToken();
-    if (!this.state.contextToken) {
-      this.logger.warn("No context token found, replies may fail");
-    }
-
-    this.logger.debug(
-      `Single user initialized: userId=${this.state.userId}, contextToken=${this.state.contextToken ? "present" : "MISSING"}`,
-    );
-    return true;
+    return this.credentialLoader.ensureSession();
   }
 
   /** 停止长轮询（委托 PollingLoop）。 */
