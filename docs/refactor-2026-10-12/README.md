@@ -48,7 +48,7 @@
 | S5 | adapters ACL + vendor 耦合文档 + 端口冻结 | 可与主线并行 | 低 | ✅ 完成 `643596e`（163 pass） |
 | S6 | Channel 瘦身 / ChannelState 收敛（可选） | S1–S3 | 中 | ✅ 完成 `093cf86`（167 pass） |
 | S7 | F6「连发多图后文本阻塞」定位与修复 | 独立 | 中 | ✅ 完成 `1f535de`（171 pass） |
-| S8 | 文档归档与清理（ARCHITECTURE/C4 同步 + E2E 清单 + README 收尾） | 全部 | 低 | 进行中（文档已提交 `8d194be`，待 rf-8 verify 通过后转 ✅） |
+| S8 | 文档归档与清理（ARCHITECTURE/C4 同步 + E2E 清单 + README 收尾） | 全部 | 低 | ✅ 完成 `63589b3`（171 pass；首轮 FAIL → `f32bb20` 修正 → 最终 PASS） |
 
 ## 最终架构
 
