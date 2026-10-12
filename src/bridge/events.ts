@@ -1,7 +1,8 @@
 /**
  * events.ts - 事件桥接
  *
- * 从 index.ts 拆出：注册所有 `pi.on(...)` 处理器以及 `handleWechatSettled`。
+ * 从 index.ts 拆出：注册所有 `pi.on(...)` 处理器；`agent_settled` 的发送决策
+ * 委托给应用层的 `ReplyService`（见 `src/application/reply.ts`）。
  *
  * 事件桥接的核心约定：
  * - 每轮 turn 的身份（`{ fromWechat, requestId }`）都在事件发生时通过
@@ -11,7 +12,7 @@
  *   `agent_end` 只负责 typing 收敛与终端标志兜底。
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getDefaultAccountToken } from "../storage/state.js";
 import type { Channel } from "../channel/channel.js";
 import { isDebugEnabled } from "../shared/config.js";
@@ -22,13 +23,13 @@ import {
   resolveTurnFromBranch,
   isAssistantMessage,
   extractLastReply,
-  type WechatTurn,
 } from "./turn.js";
 import { buildMetaInfo, refreshCachedGitBranch } from "./meta.js";
+import type { ReplyService } from "../application/reply.js";
 
 const logger = createLogger({ isDebugEnabled: () => isDebugEnabled() });
 
-export function registerBridge(pi: ExtensionAPI, channel: Channel): void {
+export function registerBridge(pi: ExtensionAPI, channel: Channel, reply: ReplyService): void {
   // ============== session_start ==============
 
   pi.on("session_start", async (_event, ctx) => {
@@ -122,61 +123,32 @@ export function registerBridge(pi: ExtensionAPI, channel: Channel): void {
 
   pi.on("agent_settled", async (_event, ctx) => {
     // 每轮结束时的可靠信号：pi 不会再有自动重试 / 压缩 / 续跑。
+    // bridge 只负责「事件 → DTO」，发送决策由应用层 ReplyService 处理。
     const turn = resolveTurnFromBranch(ctx);
+    const notify = (message: string, type?: "info" | "warning" | "error") =>
+      ctx.ui?.notify?.(message, type ?? "info");
 
     if (!turn.fromWechat) {
-      // 终端 turn：释放标志并排空队列（对缺失 agent_end 的情况也是兜底）。
-      channel.setTerminalProcessing(false);
-      channel.onAiDone();
+      // 终端 turn：无需提取回复 / 元信息（避免无谓的分支扫描）。
+      await reply.handleSettled({
+        fromWechat: false,
+        requestId: null,
+        replyText: null,
+        metaText: null,
+        notify,
+      });
       return;
     }
 
-    await handleWechatSettled(ctx, turn);
+    // 提取本轮最终回复（branch 中最后一条有文本的 assistant 消息）与模型元信息。
+    const replyText = extractLastReply(ctx);
+    const metaText = replyText ? buildMetaInfo(ctx) : null;
+    await reply.handleSettled({
+      fromWechat: true,
+      requestId: turn.requestId,
+      replyText,
+      metaText,
+      notify,
+    });
   });
-
-  // ============== agent_settled 处理函数 ==============
-
-  async function handleWechatSettled(ctx: ExtensionContext, turn: WechatTurn): Promise<void> {
-    try {
-      if (!turn.requestId) {
-        logger.debug(`agent_settled: WeChat turn without requestId, skip sending`);
-        return;
-      }
-
-      // 防重
-      if (channel.isRequestProcessed(turn.requestId)) {
-        logger.debug(`Request ${turn.requestId} already processed, skipping`);
-        return;
-      }
-
-      // 提取本轮最终回复（branch 中最后一条有文本的 assistant 消息）
-      const replyText = extractLastReply(ctx);
-      if (!replyText) {
-        logger.debug(`agent_settled: no reply text found`);
-        return;
-      }
-
-      // typing 兜底停止
-      await channel.stopTyping();
-
-      // 追加模型元信息
-      const metaInfo = buildMetaInfo(ctx);
-      const finalReply = replyText + (metaInfo ? "\n\n" + metaInfo : "");
-
-      logger.debug(`Sending reply: ${replyText.slice(0, 50)}...`);
-
-      try {
-        await channel.sendReply(finalReply);
-        // 只有发送成功后才标记已处理，失败时仍可重试（D2）。
-        channel.markRequestProcessed(turn.requestId);
-      } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        logger.error(`Failed to send reply:`, errMsg);
-        ctx.ui?.notify?.(`微信回复失败: ${errMsg}`, "error");
-      }
-    } finally {
-      // 所有早退 / 异常路径都必须释放队列，否则后续微信消息会永久停滞（D1）。
-      channel.onAiDone();
-    }
-  }
 }

@@ -27,6 +27,7 @@ import { createWechatMedia } from "./adapters/media.js";
 import { createSendFileTool } from "./bridge/tool-send-file.js";
 import { registerCommands } from "./bridge/commands.js";
 import { registerBridge } from "./bridge/events.js";
+import { ReplyService } from "./application/reply.js";
 import { isDebugEnabled } from "./shared/config.js";
 import { createLogger } from "./shared/logger.js";
 
@@ -67,7 +68,7 @@ export function createExtension(deps: ExtensionDeps = {}) {
 
     pi.registerTool(createSendFileTool(channel));
     registerCommands(pi, channel, auth);
-    registerBridge(pi, channel);
+    registerBridge(pi, channel, new ReplyService({ channel, logger }));
   };
 }
 
