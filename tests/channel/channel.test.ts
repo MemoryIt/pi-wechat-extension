@@ -133,6 +133,48 @@ test("D3 目标：重复 startPolling 不应并发两条轮询循环", async () 
 });
 
 // ---------------------------------------------------------------------------
+// A3：startPolling 同步进入 connecting
+// ---------------------------------------------------------------------------
+
+test("A3 目标：startPolling 后、首次 getUpdates 返回前 connectionState === 'connecting'", async () => {
+  let resolveFirst!: (v: unknown) => void;
+  inboundMock.getUpdates.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolveFirst = resolve;
+      }),
+  );
+  // 后续调用挂起，避免首次成功后立即再次进入请求
+  inboundMock.getUpdates.mockImplementation(() => new Promise(() => {}));
+
+  const p = channel.startPolling(opts);
+
+  // 关键：await ensureSession() 之前已同步置为 connecting
+  expect(channel.connectionState).toBe("connecting");
+
+  await waitFor(() => resolveFirst !== undefined);
+  resolveFirst({ messages: [], cursor: "" });
+  await waitFor(() => channel.connectionState === "connected");
+
+  channel.stopPolling();
+  await p;
+  expect(channel.connectionState).toBe("disconnected");
+});
+
+test("A3 可选：ensureSession 无凭证时 startPolling 结束后为 disconnected（不卡 connecting）", async () => {
+  // 清空凭证，使 ensureSession() 返回 false
+  resetAgentDir();
+
+  const p = channel.startPolling(opts);
+  // start() 同步置 connecting
+  expect(channel.connectionState).toBe("connecting");
+
+  await p;
+  // 循环退出后由 finally 回落，而非停留在 connecting
+  expect(channel.connectionState).toBe("disconnected");
+});
+
+// ---------------------------------------------------------------------------
 // D9：未向 getUpdates 传递 AbortSignal
 // ---------------------------------------------------------------------------
 

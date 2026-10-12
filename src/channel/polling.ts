@@ -122,6 +122,10 @@ export class PollingLoop {
     this.pollingActive = true;
     const generation = ++this.pollingGeneration;
 
+    // A3：同步进入 connecting，覆盖「已启动但首次 getUpdates 尚未返回」的窗口；
+    // 首次成功返回后转 connected，无凭证/退出时由 finally 回落 disconnected。
+    this.state.connectionState = "connecting";
+
     if (this.abortController.signal.aborted) {
       this.abortController = new AbortController();
     }
