@@ -1,18 +1,22 @@
 /**
- * router.ts - 消息路由（turn 执行 + 队列排空）
+ * router.ts - 消息路由（turn 编排唯一入口 + 队列排空）
  *
- * 负责执行一轮 turn 与排空队列：
+ * 拥有并集中管理 `TurnQueue` 的状态迁移（忙闲 / currentRequestId / 排空），
+ * 是 turn 编排的唯一入口：
+ * - dispatch               : 忙或终端处理中 -> 入队，否则执行（原 Channel.triggerAi）
+ * - onTurnDone             : 释放忙闲 + 排空（原 Channel.onAiDone）
  * - execute                : 媒体消息后台处理 / 文本 turn 交给宿主 agent
  * - drain                  : 20ms 延迟后取队首并执行
  * - processMediaInBackground: 后台下载并落盘媒体
  *
- * 仅依赖注入的窄接口（queue / mediaStore / mediaQueue / sender / host / opts / logger），
- * 不直接持有通道编排器，便于单测。最初自组合根抽出，行为保持一致。
+ * 仅依赖注入的窄接口（queue? / mediaStore / mediaQueue / sender / host / opts /
+ * isTerminalProcessing / logger），不直接持有通道编排器，便于单测。
  */
 
 import { MessageItemType } from "../ports/types.js";
 import type { WeixinMessage } from "../ports/types.js";
-import type { TurnQueue, SerialTaskQueue } from "./queue.js";
+import { TurnQueue } from "./queue.js";
+import type { SerialTaskQueue } from "./queue.js";
 import type { MediaStore } from "./media-store.js";
 import type { MessageSender } from "./sender.js";
 import type { PluginLogger } from "../shared/logger.js";
@@ -23,17 +27,54 @@ import type { PiHost } from "../ports/pi-host.js";
 export type RouterTurnOptions = WechatApiOpts;
 
 export interface RouterDeps {
-  queue: TurnQueue<{ msg: WeixinMessage; requestId: string }>;
+  /** 缺省在 router 内创建；保留注入便于测试观察。 */
+  queue?: TurnQueue<{ msg: WeixinMessage; requestId: string }>;
   mediaStore: MediaStore;
   mediaQueue: SerialTaskQueue;
   sender: MessageSender;
   getHost(): PiHost | null;
   getOpts(): RouterTurnOptions | null;
+  /** 终端消息处理中（原 Channel 直接读取 state.isTerminalMessageProcessing）。 */
+  isTerminalProcessing(): boolean;
   logger: PluginLogger;
 }
 
 export class MessageRouter {
-  constructor(private deps: RouterDeps) {}
+  readonly queue: TurnQueue<{ msg: WeixinMessage; requestId: string }>;
+
+  constructor(private deps: RouterDeps) {
+    this.queue = deps.queue ?? new TurnQueue<{ msg: WeixinMessage; requestId: string }>();
+  }
+
+  /**
+   * turn 编排唯一入口（原 Channel.triggerAi）。
+   * 忙或终端消息处理中 -> 入队等待；否则直接执行。
+   */
+  async dispatch(msg: WeixinMessage, requestId: string, opts: RouterTurnOptions): Promise<void> {
+    const { queue } = this;
+    if (queue.isBusy() || this.deps.isTerminalProcessing()) {
+      queue.enqueue({ msg, requestId });
+      this.deps.logger.debug(
+        `AI is ${queue.isBusy() ? "processing" : "terminal processing"}, queued message (queue size: ${queue.size})`,
+      );
+      return;
+    }
+
+    await this.execute(msg, requestId, opts);
+  }
+
+  /**
+   * AI 处理完成（原 Channel.onAiDone）：释放忙闲并继续排空。
+   */
+  onTurnDone(): void {
+    const { queue } = this;
+    queue.setBusy(false);
+    queue.setCurrentRequestId(null);
+
+    if (queue.size > 0) {
+      void this.drain();
+    }
+  }
 
   /**
    * 执行一次 turn（原 triggerAiInternal）。
@@ -41,7 +82,8 @@ export class MessageRouter {
    * 文本消息：占用忙闲标记，交给宿主 agent；失败时释放并排空。
    */
   async execute(msg: WeixinMessage, requestId: string, opts: RouterTurnOptions): Promise<void> {
-    const { queue, mediaQueue, logger } = this.deps;
+    const { mediaQueue, logger } = this.deps;
+    const { queue } = this;
 
     // === 媒体消息处理 ===
     const hasText = msg.item_list?.some(item => item.type === MessageItemType.TEXT && item.text_item?.text?.trim());
@@ -121,7 +163,8 @@ export class MessageRouter {
    * 拒绝并卡死 isAiProcessing。移除了基于错误字符串匹配的重试，避免无限递归。
    */
   async drain(): Promise<void> {
-    const { queue, logger } = this.deps;
+    const { queue } = this;
+    const { logger } = this.deps;
     const BASE_DELAY = 20;
     await sleep(BASE_DELAY);
 

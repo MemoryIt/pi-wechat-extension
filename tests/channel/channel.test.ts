@@ -246,7 +246,7 @@ test("D6 目标：sendUserMessage 抛错后应释放 isAiProcessing 且不冒泡
 
   // 不得向上冒泡成「轮询失败 / connectionState=error」
   await expect(channel.handleMessage(textMessage("hi"), opts)).resolves.toBeUndefined();
-  expect((channel as unknown as AnyChannel).queue.isBusy()).toBe(false);
+  expect((channel as unknown as AnyChannel).router.queue.isBusy()).toBe(false);
   expect(channel.connectionState).toBe("disconnected");
 });
 
@@ -419,7 +419,7 @@ test("D7 目标：队列排空时 rejecting turn 应由通道处理并释放状�
   const captured: unknown[] = [];
   const restore = wrapTriggerToObserveRejection(captured);
   try {
-    c.queue.setBusy(true);
+    c.router.queue.setBusy(true);
     await channel.triggerAi(textMessage("queued"), "R-queued", opts);
 
     pi.sendUserMessage.mockImplementation(() => {
@@ -429,7 +429,7 @@ test("D7 目标：队列排空时 rejecting turn 应由通道处理并释放状�
     channel.onAiDone();
     await sleep(80);
 
-    expect(c.queue.isBusy()).toBe(false);
+    expect(c.router.queue.isBusy()).toBe(false);
   } finally {
     restore();
   }
@@ -498,7 +498,7 @@ test("B6 目标：终端处理期间连发消息按序排队，排空后 request
   await channel.triggerAi(textMessage("m3"), "r3", opts);
 
   const c = channel as unknown as AnyChannel;
-  expect(c.queue.size).toBe(3);
+  expect(c.router.queue.size).toBe(3);
 
   // 终端处理结束，逐轮通知完成并排空队列
   channel.setTerminalProcessing(false);
@@ -514,7 +514,7 @@ test("B6 目标：终端处理期间连发消息按序排队，排空后 request
 
   expect(requestIds).toEqual(["r1", "r2", "r3"]);
   expect(contents).toEqual(["m1", "m2", "m3"]);
-  expect(c.queue.size).toBe(0);
+  expect(c.router.queue.size).toBe(0);
 });
 
 // ---------------------------------------------------------------------------
@@ -548,7 +548,7 @@ test("B5 目标：媒体消息立即 ack（不含路径），下载未完成不�
 
   // 下载尚未完成：history 未写，且未占用 AI 忙闲标记（不阻塞轮询）
   expect(pi.calls.sendMessage.length).toBe(0);
-  expect((channel as unknown as AnyChannel).queue.isBusy()).toBe(false);
+  expect((channel as unknown as AnyChannel).router.queue.isBusy()).toBe(false);
 
   release(undefined);
   await waitFor(() => pi.calls.sendMessage.length > 0);

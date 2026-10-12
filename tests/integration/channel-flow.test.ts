@@ -133,7 +133,7 @@ test("入站文本：handleMessage 写 wechat_meta + sendUserMessage；onAiDone 
 
   // 忙时第二条入队；onAiDone 后释放并排空
   await channel.handleMessage(textMessage("second"), opts);
-  expect((channel as unknown as { queue: { size: number } }).queue.size).toBe(1);
+  expect((channel as unknown as { router: { queue: { size: number } } }).router.queue.size).toBe(1);
 
   channel.onAiDone();
   expect(channel.getCurrentRequestId()).toBeNull();
@@ -163,7 +163,7 @@ test("入站媒体：立即 ack；后台串行下载完成后写 wechat_media hi
   expect(ack).toContain("媒体文件已收到");
   expect(ack).not.toContain("/tmp/media");
   expect(fakeHost.calls.sendMessage).toHaveLength(0);
-  expect((channel as unknown as { queue: { isBusy(): boolean } }).queue.isBusy()).toBe(false);
+  expect((channel as unknown as { router: { queue: { isBusy(): boolean } } }).router.queue.isBusy()).toBe(false);
 
   // 放行下载：端口 download 被调用，后台写入 wechat_media
   release(undefined);

@@ -2,8 +2,9 @@
  * channel/channel.ts - 微信通道粗粒度编排器
  *
  * 承载单用户通道的编排逻辑：持有 `ChannelState` 与各协作类
- * （`PollingLoop` / `TurnQueue` / `SerialTaskQueue` / `MediaStore` /
+ * （`PollingLoop` / `SerialTaskQueue` / `MediaStore` /
  * `TypingController` / `MessageSender` / `MessageRouter`），并装配为完整通道。
+ * turn 队列由 `MessageRouter` 拥有并集中管理状态迁移（见 `router.ts`）。
  *
  * 依赖方向单向：`channel/*` 只依赖 `ports/`、`storage/` 与 `shared/`，不 import
  * 微信侧适配层或 `../engine/*`；宿主依赖使用 `ports/pi-host` 的 `PiHost`。
@@ -27,7 +28,7 @@ import type { Notifier } from "./state.js";
 import { RequestIdGenerator } from "./request-id.js";
 import { PollingLoop } from "./polling.js";
 import type { ConnectionState } from "./polling.js";
-import { TurnQueue, SerialTaskQueue } from "./queue.js";
+import { SerialTaskQueue } from "./queue.js";
 import { TypingController } from "./typing.js";
 import { MessageSender } from "./sender.js";
 import { MessageRouter } from "./router.js";
@@ -58,7 +59,6 @@ export class Channel {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly poller: PollingLoop;
 
-  private readonly queue = new TurnQueue<{ msg: WeixinMessage; requestId: string }>();
   private readonly mediaStore: MediaStore;
   private readonly mediaQueue: SerialTaskQueue;
   private readonly typing: TypingController;
@@ -100,12 +100,12 @@ export class Channel {
     });
 
     this.router = new MessageRouter({
-      queue: this.queue,
       mediaStore: this.mediaStore,
       mediaQueue: this.mediaQueue,
       sender: this.sender,
       getHost: () => this.state.host,
       getOpts: () => this.getCurrentOpts(),
+      isTerminalProcessing: () => this.state.isTerminalMessageProcessing,
       logger: this.logger,
     });
 
@@ -227,27 +227,13 @@ export class Channel {
    * 触发 AI 处理消息（单用户模式，无需 userId 参数）。
    */
   async triggerAi(msg: WeixinMessage, requestId: string, opts: WechatApiOpts): Promise<void> {
-    // 只有当 AI 空闲且没有终端消息在处理时，才直接发送
-    // 否则加入队列等待
-    if (this.queue.isBusy() || this.state.isTerminalMessageProcessing) {
-      this.queue.enqueue({ msg, requestId });
-      this.logger.debug(
-        `AI is ${this.queue.isBusy() ? "processing" : "terminal processing"}, queued message (queue size: ${this.queue.size})`,
-      );
-      return;
-    }
-
-    await this.router.execute(msg, requestId, opts);
+    // 编排（忙/终端 -> 入队，否则执行）由 MessageRouter 统一负责。
+    await this.router.dispatch(msg, requestId, opts);
   }
 
   /** AI 处理完成：释放队列并继续排空。 */
   onAiDone(): void {
-    this.queue.setBusy(false);
-    this.queue.setCurrentRequestId(null);
-
-    if (this.queue.size > 0) {
-      void this.router.drain();
-    }
+    this.router.onTurnDone();
   }
 
   // ============== Typing 相关（单用户）==============
@@ -292,15 +278,15 @@ export class Channel {
   // ============== 防重相关 ==============
 
   getCurrentRequestId(): string | null {
-    return this.queue.getCurrentRequestId();
+    return this.router.queue.getCurrentRequestId();
   }
 
   isRequestProcessed(requestId: string): boolean {
-    return this.queue.isRequestProcessed(requestId);
+    return this.router.queue.isRequestProcessed(requestId);
   }
 
   markRequestProcessed(requestId: string): void {
-    this.queue.markRequestProcessed(requestId);
+    this.router.queue.markRequestProcessed(requestId);
   }
 
   // ============== 重置 ==============
@@ -308,7 +294,7 @@ export class Channel {
   reset(): void {
     this.typing.reset();
 
-    this.queue.reset();
+    this.router.queue.reset();
 
     // 清空会话状态：凭证 + 终端标志（config/host/notifier 保留）
     this.state.resetSession();

@@ -55,7 +55,9 @@ interface Harness {
   processed: string[];
 }
 
-function makeHarness(overrides: Partial<Pick<RouterDeps, "getHost" | "getOpts">> = {}): Harness {
+function makeHarness(
+  overrides: Partial<Pick<RouterDeps, "getHost" | "getOpts" | "isTerminalProcessing">> = {},
+): Harness {
   const queue = new TurnQueue<{ msg: WeixinMessage; requestId: string }>();
   const host = makeHost();
   const sender = { sendText: mock(async (_t: string) => {}) };
@@ -71,6 +73,7 @@ function makeHarness(overrides: Partial<Pick<RouterDeps, "getHost" | "getOpts">>
     sender: sender as unknown as RouterDeps["sender"],
     getHost: overrides.getHost ?? (() => host as unknown as PiHost),
     getOpts: overrides.getOpts ?? (() => opts),
+    isTerminalProcessing: overrides.isTerminalProcessing ?? (() => false),
     logger,
   });
 
@@ -78,6 +81,79 @@ function makeHarness(overrides: Partial<Pick<RouterDeps, "getHost" | "getOpts">>
 }
 
 beforeEach(() => {});
+
+// ---------------------------------------------------------------------------
+// dispatch：turn 编排唯一入口
+// ---------------------------------------------------------------------------
+
+test("router.dispatch 空闲：直接调用 execute（宿主收到消息）", async () => {
+  const h = makeHarness();
+  await h.router.dispatch(textMsg("hello"), "D1", opts);
+
+  expect(h.host.appendEntry).toHaveBeenCalledTimes(1);
+  expect(h.host.appendEntry.mock.calls[0]).toEqual(["wechat_meta", { requestId: "D1" }]);
+  expect(h.host.sendUserMessage).toHaveBeenCalledTimes(1);
+  expect(h.queue.size).toBe(0);
+  expect(h.queue.isBusy()).toBe(true);
+  expect(h.queue.getCurrentRequestId()).toBe("D1");
+});
+
+test("router.dispatch 忙：入队不执行", async () => {
+  const h = makeHarness();
+  h.queue.setBusy(true);
+
+  await h.router.dispatch(textMsg("queued"), "D2", opts);
+
+  expect(h.queue.size).toBe(1);
+  expect(h.host.sendUserMessage).not.toHaveBeenCalled();
+  expect(h.queue.getCurrentRequestId()).toBeNull();
+});
+
+test("router.dispatch 终端处理中：入队不执行", async () => {
+  const h = makeHarness({ isTerminalProcessing: () => true });
+
+  await h.router.dispatch(textMsg("queued"), "D3", opts);
+
+  expect(h.queue.size).toBe(1);
+  expect(h.host.sendUserMessage).not.toHaveBeenCalled();
+  expect(h.queue.isBusy()).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// onTurnDone：释放忙闲 + 排空
+// ---------------------------------------------------------------------------
+
+test("router.onTurnDone：清 busy/currentRequestId；有排队则排空队首", async () => {
+  const h = makeHarness();
+  h.queue.setBusy(true);
+  h.queue.setCurrentRequestId("R-done");
+  h.queue.enqueue({ msg: textMsg("next"), requestId: "N1" });
+
+  h.router.onTurnDone();
+
+  // 同步阶段：忙闲与 currentRequestId 立即释放
+  expect(h.queue.isBusy()).toBe(false);
+  expect(h.queue.getCurrentRequestId()).toBeNull();
+
+  // 排空（20ms 延迟）后队首被执行
+  await sleep(40);
+  expect(h.queue.size).toBe(0);
+  expect(h.host.sendUserMessage).toHaveBeenCalledTimes(1);
+  expect(h.host.sendUserMessage.mock.calls[0][0]).toBe("next");
+});
+
+test("router.onTurnDone：空队列仅释放忙闲，不再执行", async () => {
+  const h = makeHarness();
+  h.queue.setBusy(true);
+  h.queue.setCurrentRequestId("R-none");
+
+  h.router.onTurnDone();
+  await sleep(40);
+
+  expect(h.queue.isBusy()).toBe(false);
+  expect(h.queue.getCurrentRequestId()).toBeNull();
+  expect(h.host.sendUserMessage).not.toHaveBeenCalled();
+});
 
 // ---------------------------------------------------------------------------
 // 文本 turn
