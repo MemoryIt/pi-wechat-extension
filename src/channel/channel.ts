@@ -3,7 +3,8 @@
  *
  * 承载单用户通道的编排逻辑：持有 `ChannelState` 与各协作类
  * （`PollingLoop` / `SerialTaskQueue` / `MediaStore` /
- * `TypingController` / `MessageSender` / `MessageRouter`），并装配为完整通道。
+ * `TypingController` / `MessageSender` / `MessageRouter` / `InboundHandler`），
+ * 并装配为完整通道。
  * turn 队列由 `MessageRouter` 拥有并集中管理状态迁移（见 `router.ts`）。
  *
  * 依赖方向单向：`channel/*` 只依赖 `ports/`、`storage/` 与 `shared/`，不 import
@@ -32,6 +33,7 @@ import { TypingController } from "./typing.js";
 import { MessageSender } from "./sender.js";
 import { MessageRouter } from "./router.js";
 import { MediaStore } from "./media-store.js";
+import { InboundHandler } from "./inbound-handler.js";
 import { createCredentialLoader } from "./credential-loader.js";
 import type { CredentialLoader } from "./credential-loader.js";
 
@@ -66,7 +68,7 @@ export class Channel {
   private readonly typing: TypingController;
   private readonly sender: MessageSender;
   private readonly router: MessageRouter;
-  private readonly requestId = new RequestIdGenerator();
+  private readonly inboundHandler: InboundHandler;
 
   constructor(deps: ChannelDeps) {
     this.state = deps.state ?? new ChannelState();
@@ -111,6 +113,14 @@ export class Channel {
       logger: this.logger,
     });
 
+    this.inboundHandler = new InboundHandler({
+      state: this.state,
+      typing: this.typing,
+      router: this.router,
+      requestId: new RequestIdGenerator(),
+      logger: this.logger,
+    });
+
     this.credentialLoader = createCredentialLoader({
       state: this.state,
       logger: this.logger,
@@ -122,7 +132,7 @@ export class Channel {
       loadCursor: (accountId) => storage.loadSyncCursor(accountId),
       saveCursor: (accountId, cursor) => storage.saveSyncCursor(accountId, cursor),
       inbound,
-      onMessage: (msg, opts) => this.handleMessage(msg, opts),
+      onMessage: (msg, opts) => this.inboundHandler.handle(msg, opts),
       onNeedsRelogin: () => {
         this.logger.debug("Session expired, needs relogin");
         this.state.notifier?.("微信登录已失效，请执行 /wechat login 重新登录", "error");
@@ -182,29 +192,10 @@ export class Channel {
 
   /**
    * 处理收到的微信消息：contextToken 更新 / 触发 turn。
+   * 委托 `InboundHandler`；签名与行为保持不变。
    */
   async handleMessage(msg: WeixinMessage, opts: WechatApiOpts): Promise<void> {
-    // 单用户模式下，忽略消息来源（固定发给单用户）
-    const requestId = this.generateRequestId();
-
-    // 更新 contextToken（如果消息中有）
-    if (msg.context_token && msg.context_token !== this.state.contextToken) {
-      this.logger.debug(`Updating contextToken from message`);
-      this.state.contextToken = msg.context_token;
-      // contextToken 变化后旧 typing ticket 立即失效
-      this.typing.invalidateTicket();
-      // 持久化
-      if (this.state.accountId && this.state.userId) {
-        await storage.saveContextToken(this.state.accountId, this.state.userId, {
-          displayName: this.state.userId,
-          contextToken: msg.context_token,
-          lastMessageAt: Date.now(),
-        });
-      }
-    }
-
-    // 触发 AI 处理
-    await this.triggerAi(msg, requestId, opts);
+    return this.inboundHandler.handle(msg, opts);
   }
 
   /**
@@ -300,14 +291,5 @@ export class Channel {
    */
   private getCredentials(): WechatCredentials | null {
     return this.state.getCredentials();
-  }
-
-  /**
-   * 生成请求 ID
-   * 格式: YYMMDDHHMMSSmmm + 3 位同毫秒序号（保证同一毫秒内也唯一）
-   * 委托 `RequestIdGenerator`（签名与产出格式不变）。
-   */
-  private generateRequestId(): string {
-    return this.requestId.next();
   }
 }

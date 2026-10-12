@@ -5,12 +5,13 @@
  * 微信边界经注入的端口 fake（inbound/outbound/media）观测，storage/config 用真实实现 + 临时目录。
  *
  * 覆盖：D3 轮询重入、D6 同步抛错被吞、D7 队列 rejection 未处理、
- *       D9 未传 AbortSignal、D13 requestId 同毫秒冲突、
- *       D14 fileName 被忽略、CS-3 slash 拦截移除后的 "/foo" 行为回归、
+ *       D9 未传 AbortSignal、D14 fileName 被忽略、
+ *       CS-3 slash 拦截移除后的 "/foo" 行为回归、
  *       D16 typing ticket 缓存不失效 / timer 泄漏。
+ * （D13「同毫秒 requestId 唯一」：requestId 生成已随 `InboundHandler` 迁出，
+ * 不变量由 tests/channel/request-id.test.ts 确定性覆盖。）
  */
 import { test, expect, mock, beforeEach } from "bun:test";
-import { setSystemTime } from "bun:test";
 import { resetAgentDir } from "../setup/mocks";
 import {
   installChannelMocks,
@@ -217,22 +218,6 @@ test("D9 目标：stopPolling 后 startPolling 应在 300ms 内 resolve", async 
     }),
   ]);
   expect(Date.now() - started).toBeLessThan(300);
-});
-
-// ---------------------------------------------------------------------------
-// D13：requestId 同毫秒冲突
-// ---------------------------------------------------------------------------
-
-test("D13 目标：同一毫秒内的 requestId 应保持唯一", () => {
-  setSystemTime(new Date("2026-01-02T03:04:05.678Z"));
-  try {
-    const c = channel as unknown as AnyChannel;
-    const a = c.generateRequestId();
-    const b = c.generateRequestId();
-    expect(a).not.toBe(b);
-  } finally {
-    setSystemTime();
-  }
 });
 
 // ---------------------------------------------------------------------------
