@@ -440,3 +440,60 @@ test("auth：waitForLogin 未连接时保留 connected=false 与 message", async
     userId: undefined,
   });
 });
+
+// ===========================================================================
+// 端口冻结 / ACL 契约
+// ===========================================================================
+
+test("端口冻结：WechatOutbound 方法参数面（sendFile 不得加 to）", () => {
+  const outbound = createWechatOutbound({ getCredentials: () => makeCreds() });
+
+  expect(outbound.sendText.length).toBe(1);
+  expect(outbound.sendFile.length).toBe(1);
+  expect(outbound.sendTyping.length).toBe(2);
+  expect(outbound.getTypingTicket.length).toBe(0);
+});
+
+test("端口冻结：WechatMedia / WechatInbound / WechatAuth 方法参数面", () => {
+  const media = createWechatMedia();
+  const inbound = createWechatInbound();
+  const auth = createWechatAuth();
+
+  expect(media.download.length).toBe(2);
+  expect(inbound.getUpdates.length).toBe(1);
+  expect(auth.startQr.length).toBe(1);
+  expect(auth.waitForLogin.length).toBe(1);
+});
+
+test("ACL 契约：vendor 5 参 saveMedia → 端口仅收到 3 参，subdir/maxBytes 不泄漏", async () => {
+  const saveMedia = mock(async (_b: Buffer, _c?: string, _f?: string) => ({ path: "/saved/acl.png" }));
+
+  mediaMock.downloadMediaFromItem.mockImplementationOnce(async (_item: unknown, deps: unknown) => {
+    const d = deps as {
+      saveMedia: (
+        buffer: Buffer,
+        contentType?: string,
+        subdir?: string,
+        maxBytes?: number,
+        originalFilename?: string,
+      ) => Promise<{ path: string }>;
+    };
+    // 模拟 vendor：以 5 参调用（subdir="inbound" / maxBytes=100 / originalFilename="orig.png"）
+    const saved = await d.saveMedia(Buffer.from("acl"), "image/png", "inbound", 100, "orig.png");
+    return { decryptedPicPath: saved.path };
+  });
+
+  const media = createWechatMedia();
+  const result = await media.download(
+    { type: 2 },
+    { cdnBaseUrl: "https://cdn.example.com", saveMedia, label: "ACL" },
+  );
+
+  expect(result).toEqual({ path: "/saved/acl.png" });
+  expect(saveMedia.mock.calls.length).toBe(1);
+  // 端口 saveMedia 只收到 3 参：subdir / maxBytes 被 adapter 有意丢弃
+  expect(saveMedia.mock.calls[0].length).toBe(3);
+  expect(saveMedia.mock.calls[0][0]).toEqual(Buffer.from("acl"));
+  expect(saveMedia.mock.calls[0][1]).toBe("image/png");
+  expect(saveMedia.mock.calls[0][2]).toBe("orig.png");
+});

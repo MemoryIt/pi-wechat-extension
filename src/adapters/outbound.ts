@@ -1,4 +1,17 @@
 /**
+ * ACL: src/adapters/outbound.ts — 出站消息的 Anti-Corruption Layer
+ *
+ * 本文件是自写层唯一接触 vendor 发送接口（messaging/send、messaging/send-media、
+ * api/api 的 getConfig/sendTyping）的地方。
+ * 翻译：把端口方法补齐为 vendor 需要的 `to`/`opts`；凭证只来自构造时注入的
+ *       `getCredentials()` provider，端口方法本身不带凭证参数。
+ * 有意隐藏/丢弃：固定 CDN 基址（novac2c…）封装在 adapter 内，不暴露给上层；
+ *       vendor 的 clientId / MessageState 等协议细节不外泄；typing ticket 不缓存，
+ *       有效期 / contextToken 绑定 / 失效逻辑留在上层 TypingController。
+ * 边界纪律：vendor 类型、CDN 路径、全局状态不得泄漏回上层；
+ *       上层只依赖 `src/ports/outbound.ts` 的端口类型（含 ports/types 凭证类型）。
+ */
+/**
  * outbound.ts - 出站消息 adapter（WechatOutbound）
  *
  * 薄包装 vendor 的文本/媒体发送与 typing_ticket 接口。凭证由构造时注入的
