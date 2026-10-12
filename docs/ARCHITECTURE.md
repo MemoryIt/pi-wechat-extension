@@ -41,7 +41,7 @@ storage     ──→ shared/*
 
 - **禁止反向依赖**：`bridge` 不得被 `channel` / `application` / `ports` / `adapters` / `shared` / `storage` import；`channel` 不得 import `bridge`；`storage` 不得 import `channel` / `bridge`；`application` 不得 import pi / vendor / 具体 `Channel`（只依赖自有的窄接口、`storage`、`ports`、`shared`）。
 - **端口层无运行时逻辑**：`src/ports/*.ts` 仅类型 / 常量（唯一例外是 `types.ts` 的 vendor 协议类型转发）。
-- **隔离 vendor**：除 `src/adapters/**`、`src/ports/types.ts`、`src/shared/redact.ts`、`src/shared/file-logger.ts` 外，自写代码不 import `api/ auth/ cdn/ media/ messaging/ util/`。vendor 的耦合细节见 [`vendor-constraints.md`](../vendor-constraints.md)（RF-5 产出）。
+- **隔离 vendor**：除 `src/adapters/**`、`src/ports/types.ts`、`src/shared/redact.ts`、`src/shared/file-logger.ts` 外，自写代码不 import `api/ auth/ cdn/ media/ messaging/ util/`。vendor 的耦合细节见 [`vendor-constraints.md`](vendor-constraints.md)（RF-5 产出）。
 - **通道不得回溯旧门面**：旧的引擎目录已删除，`channel` 只依赖端口与协作类。
 - **组合根组装端口**：`src/index.ts` 创建 `ChannelState` 与 `inbound/outbound/media` adapters，并把同一 state 注入 outbound 的 `getCredentials` 与 `Channel`；`channel` 只依赖 `ports/*`、`storage/*`、`shared/*`，不 import adapters。
 
@@ -213,7 +213,7 @@ storage     ──→ shared/*
 
 ## 5. 与 openclaw-weixin 迁移模块的依赖关系
 
-`api/ auth/ cdn/ media/ messaging/ util/` 迁移自 Tencent/openclaw-weixin，视为**外部适配层**（vendor）。重构后自写代码只在 `src/adapters/` 与两个再导出边界调用下列函数（不展开其内部实现）；不可动的耦合、维护规则与端口责任边界见 [`docs/vendor-constraints.md`](../vendor-constraints.md)（RF-5 产出）。
+`api/ auth/ cdn/ media/ messaging/ util/` 迁移自 Tencent/openclaw-weixin，视为**外部适配层**（vendor）。重构后自写代码只在 `src/adapters/` 与两个再导出边界调用下列函数（不展开其内部实现）；不可动的耦合、维护规则与端口责任边界见 [`docs/vendor-constraints.md`](vendor-constraints.md)（RF-5 产出）。
 
 | 自写调用点 | vendor 模块 | 调用面 |
 |------------|-------------|--------|

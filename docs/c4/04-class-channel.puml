@@ -9,7 +9,7 @@
 '   ..>  依赖 / 引用（构造注入或调用）
 '   <<orchestrator>> / <<state>> / <<collaborator>> / <<port>> / <<deps>> / <<module>>
 ' 附注：bridge / tool / application 不依赖具体 Channel，只依赖窄接口
-'       （BridgeChannel / SendFileChannel / ReplyChannel / SessionChannel，见 docs/ARCHITECTURE.md §4.11）。
+'       （BridgeChannel / SendFileChannel / ReplyChannel / SessionChannel，见 docs/ARCHITECTURE.md §4.10）。
 ' ============================================================================
 
 skinparam classAttributeIconSize 0
