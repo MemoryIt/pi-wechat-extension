@@ -45,8 +45,8 @@
 | S3 | 去模块级可变状态 + `index` 闭包接线 | S2 | 低–中 | ✅ 完成 `31822a2`（158 pass） |
 | S4 | 修 A3：`polling.start()` 同步 `connecting` | 可与主线并行 | 低 | ✅ 完成 `2f49ced`（160 pass） |
 | S5 | adapters ACL + vendor 耦合文档 + 端口冻结 | 可与主线并行 | 低 | ✅ 完成 `643596e`（163 pass） |
-| S6 | Channel 瘦身 / ChannelState 收敛（可选） | S1–S3 | 中 | 进行中 |
-| S7 | F6「连发多图后文本阻塞」定位与修复 | 独立 | 中 | 待办 |
+| S6 | Channel 瘦身 / ChannelState 收敛（可选） | S1–S3 | 中 | ✅ 完成 `093cf86`（167 pass） |
+| S7 | F6「连发多图后文本阻塞」定位与修复 | 独立 | 中 | 进行中 |
 | S8 | 文档归档与清理 | 全部 | 低 | 待办 |
 
 ## 流程约定
