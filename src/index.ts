@@ -27,6 +27,8 @@ import { createWechatMedia } from "./adapters/media.js";
 import { createSendFileTool } from "./bridge/tool-send-file.js";
 import { registerCommands } from "./bridge/commands.js";
 import { registerBridge } from "./bridge/events.js";
+import { TurnResolver } from "./bridge/turn.js";
+import { MetaBuilder } from "./bridge/meta.js";
 import { ReplyService } from "./application/reply.js";
 import { SessionService } from "./application/session.js";
 import { isDebugEnabled } from "./shared/config.js";
@@ -69,9 +71,19 @@ export function createExtension(deps: ExtensionDeps = {}) {
 
     const session = new SessionService({ channel, auth, logger });
 
-    pi.registerTool(createSendFileTool(channel));
+    const turn = new TurnResolver();
+    const meta = new MetaBuilder();
+
+    pi.registerTool(createSendFileTool(channel, logger));
     registerCommands(pi, session);
-    registerBridge(pi, channel, new ReplyService({ channel, logger }), session);
+    registerBridge(pi, {
+      channel,
+      reply: new ReplyService({ channel, logger }),
+      session,
+      turn,
+      meta,
+      logger,
+    });
   };
 }
 

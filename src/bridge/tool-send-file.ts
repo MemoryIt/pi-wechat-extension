@@ -2,7 +2,7 @@
  * tool-send-file.ts - send_wechat_file 工具
  *
  * 从 index.ts 拆出：允许 AI 向当前微信用户发送本地文件。
- * 通过 `createSendFileTool(channel)` 注入 `Channel`。
+ * 通过 `createSendFileTool(channel, logger)` 注入 `Channel` 与共享 logger。
  */
 
 import { Type, type Static } from "@sinclair/typebox";
@@ -10,12 +10,9 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Channel } from "../channel/channel.js";
-import { isDebugEnabled } from "../shared/config.js";
-import { createLogger } from "../shared/logger.js";
+import type { PluginLogger } from "../shared/logger.js";
 
-const logger = createLogger({ isDebugEnabled: () => isDebugEnabled() });
-
-export function createSendFileTool(channel: Channel): ToolDefinition {
+export function createSendFileTool(channel: Channel, logger: PluginLogger): ToolDefinition {
   const sendFileParams = Type.Object({
     localPath: Type.String({
       description: "必须填写：Pi 本地文件的**完整绝对路径**（例如 /Users/mou/code/pi-dev/Agent.pptx）",

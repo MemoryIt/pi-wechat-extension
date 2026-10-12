@@ -3,12 +3,12 @@
  *
  * meta.ts 单测：buildMetaInfo 的元信息拼装与增量成本累计。
  *
- * 注意：costAccumulator 是模块级状态，同一文件内用例按声明顺序共享；
- * 因此先验证「无成本」格式，再验证增量累计行为。
+ * 注意：成本累计状态现为 `MetaBuilder` 实例字段；用例各自创建实例，
+ * 实例内多次调用共享累计状态。
  */
 import { test, expect } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { buildMetaInfo, accumulateCost } from "../../src/bridge/meta.js";
+import { MetaBuilder } from "../../src/bridge/meta.js";
 
 let usageReads = 0;
 
@@ -22,7 +22,8 @@ function makeCtx(branch: unknown[]): ExtensionContext {
 }
 
 test("buildMetaInfo：无成本时输出 cwd / 上下文 / 模型", () => {
-  const info = buildMetaInfo(makeCtx([]));
+  const metaBuilder = new MetaBuilder();
+  const info = metaBuilder.buildMetaInfo(makeCtx([]));
   expect(info).toContain("/tmp/proj");
   expect(info).toContain("0.5%/200k");
   expect(info).toContain("(anthropic) claude-test");
@@ -48,10 +49,11 @@ test("accumulateCost：增量累计且不重复读取旧 entry", () => {
     message: { role: "assistant", content: [{ type: "text", text: "second" }], usage: { cost: { total: 0.2 } } },
   };
 
-  expect(accumulateCost(makeCtx([first]))).toBeCloseTo(0.1, 5);
+  const metaBuilder = new MetaBuilder();
+  expect(metaBuilder.accumulateCost(makeCtx([first]))).toBeCloseTo(0.1, 5);
   expect(usageReads).toBe(1);
 
-  const info = buildMetaInfo(makeCtx([first, second]));
+  const info = metaBuilder.buildMetaInfo(makeCtx([first, second]));
   expect(usageReads).toBe(1);
   expect(info).toContain("$0.300");
 });

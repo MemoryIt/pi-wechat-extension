@@ -8,41 +8,45 @@
  *
  * 事件桥接的核心约定：
  * - 每轮 turn 的身份（`{ fromWechat, requestId }`）都在事件发生时通过
- *   `resolveTurnBeforeRun()` / `resolveTurnFromBranch()` 从 session 中同步解析，
+ *   `turn.resolveTurnBeforeRun()` / `resolveTurnFromBranch()` 从 session 中同步解析，
  *   并显式传给处理函数。
  * - 最终回复在 `agent_settled` 发送（一轮 prompt 只发一次，覆盖重试/压缩/续跑后的最终版）；
  *   `agent_end` 只负责 typing 收敛与终端标志兜底。
+ * - `turn` / `meta` / `logger` 等状态均由组合根创建并经 `BridgeDeps` 注入，
+ *   桥接模块不再持有模块级可变状态。
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Channel } from "../channel/channel.js";
-import { isDebugEnabled } from "../shared/config.js";
-import { createLogger } from "../shared/logger.js";
+import type { PluginLogger } from "../shared/logger.js";
 import {
-  pushPendingWechatInput,
-  resolveTurnBeforeRun,
   resolveTurnFromBranch,
   isAssistantMessage,
   extractLastReply,
+  type TurnResolver,
 } from "./turn.js";
-import { buildMetaInfo, refreshCachedGitBranch } from "./meta.js";
+import type { MetaBuilder } from "./meta.js";
 import type { ReplyService } from "../application/reply.js";
 import type { SessionService } from "../application/session.js";
 import { createSessionUi } from "./session-ui.js";
 
-const logger = createLogger({ isDebugEnabled: () => isDebugEnabled() });
+export interface BridgeDeps {
+  channel: Channel;
+  reply: ReplyService;
+  session: SessionService;
+  turn: TurnResolver;
+  meta: MetaBuilder;
+  logger: PluginLogger;
+}
 
-export function registerBridge(
-  pi: ExtensionAPI,
-  channel: Channel,
-  reply: ReplyService,
-  session: SessionService,
-): void {
+export function registerBridge(pi: ExtensionAPI, deps: BridgeDeps): void {
+  const { channel, reply, session, meta, logger } = deps;
+
   // ============== session_start ==============
 
   pi.on("session_start", async (_event, ctx) => {
     // 不再用空 render 覆盖内置 footer；分支名通过 pi.exec 获取。
-    await refreshCachedGitBranch(pi);
+    await meta.refreshGitBranch(pi);
 
     // B4：会话过期（needs_relogin）时通过 UI 通知用户
     channel.setNotifier((msg, type) => ctx.ui.notify(msg, type ?? "info"));
@@ -64,9 +68,9 @@ export function registerBridge(
     const inputEvent = event as { source?: string; text?: string };
     if (inputEvent.source !== "extension") return { action: "continue" };
 
-    const turn = resolveTurnBeforeRun(ctx);
+    const turn = deps.turn.resolveTurnBeforeRun(ctx);
     if (turn.fromWechat) {
-      pushPendingWechatInput({ requestId: turn.requestId, text: inputEvent.text ?? "" });
+      deps.turn.pushPendingWechatInput({ requestId: turn.requestId, text: inputEvent.text ?? "" });
     }
     return { action: "continue" };
   });
@@ -77,7 +81,7 @@ export function registerBridge(
     // 同步捕获本轮 turn 的身份，不做任何延迟。
     // 此刻当前 user 消息尚未写入分支（pi 在 before_agent_start 之后才 append），
     // 因此用「最近一条 wechat_meta 是否位于最后一条 assistant 之后」判断。
-    const turn = resolveTurnBeforeRun(ctx, (event as { prompt?: string }).prompt);
+    const turn = deps.turn.resolveTurnBeforeRun(ctx, (event as { prompt?: string }).prompt);
     if (turn.fromWechat) {
       logger.debug(`before_agent_start: WeChat turn detected, requestId=${turn.requestId ?? "(unknown)"}`);
     } else {
@@ -139,7 +143,7 @@ export function registerBridge(
 
     // 提取本轮最终回复（branch 中最后一条有文本的 assistant 消息）与模型元信息。
     const replyText = extractLastReply(ctx);
-    const metaText = replyText ? buildMetaInfo(ctx) : null;
+    const metaText = replyText ? meta.buildMetaInfo(ctx) : null;
     await reply.handleSettled({
       fromWechat: true,
       requestId: turn.requestId,

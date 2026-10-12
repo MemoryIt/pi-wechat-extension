@@ -26,17 +26,41 @@ export interface BranchEntry {
 /**
  * 由 `input` 事件（`pi.sendUserMessage` 注入）维护的待处理微信消息 FIFO。
  * 只用于在 `event.prompt` 兜底时识别来源，不保存跨轮的可变 turn 标记。
+ *
+ * 状态收拢在实例上，由组合根在 `(pi) => {}` 内创建；同一次 `createExtension()(pi)`
+ * 的多次事件共享同一实例，不同组合根调用 / 测试实例互不污染。
  */
-const pendingWechatInputs: Array<{ requestId: string | null; text: string }> = [];
+export class TurnResolver {
+  private readonly pendingWechatInputs: Array<{ requestId: string | null; text: string }> = [];
 
-/** 入队一条注入的微信输入（供 events.ts 的 input 处理器使用）。 */
-export function pushPendingWechatInput(item: { requestId: string | null; text: string }): void {
-  pendingWechatInputs.push(item);
-}
+  /** 入队一条注入的微信输入（供 events.ts 的 input 处理器使用）。 */
+  pushPendingWechatInput(item: { requestId: string | null; text: string }): void {
+    this.pendingWechatInputs.push(item);
+  }
 
-/** 清空待处理队列（重置 / 测试用）。 */
-export function resetPendingWechatInputs(): void {
-  pendingWechatInputs.length = 0;
+  /** 清空待处理队列（重置 / 测试用）。 */
+  resetPendingWechatInputs(): void {
+    this.pendingWechatInputs.length = 0;
+  }
+
+  /**
+   * 事件发生时同步解析 turn 身份（pre-run）：优先用 session 中的 wechat_meta，
+   * 找不到时用 event.prompt 与 input FIFO 兜底。
+   */
+  resolveTurnBeforeRun(ctx: ExtensionContext, prompt?: string): WechatTurn {
+    const meta = resolvePendingWechatMeta(ctx);
+    if (meta) return { fromWechat: true, requestId: meta.requestId };
+
+    if (typeof prompt === "string") {
+      const idx = this.pendingWechatInputs.findIndex((item) => item.text === prompt);
+      if (idx >= 0) {
+        const [item] = this.pendingWechatInputs.splice(idx, 1);
+        return { fromWechat: true, requestId: item.requestId };
+      }
+    }
+
+    return { fromWechat: false, requestId: null };
+  }
 }
 
 /** 统一的分支 entry 视图读取。 */
@@ -46,25 +70,6 @@ export function getBranch(ctx: ExtensionContext): BranchEntry[] {
 
 export function isAssistantMessage(event: unknown): boolean {
   return (event as { message?: { role?: string } })?.message?.role === "assistant";
-}
-
-/**
- * 事件发生时同步解析 turn 身份（pre-run）：优先用 session 中的 wechat_meta，
- * 找不到时用 event.prompt 与 input FIFO 兜底。
- */
-export function resolveTurnBeforeRun(ctx: ExtensionContext, prompt?: string): WechatTurn {
-  const meta = resolvePendingWechatMeta(ctx);
-  if (meta) return { fromWechat: true, requestId: meta.requestId };
-
-  if (typeof prompt === "string") {
-    const idx = pendingWechatInputs.findIndex((item) => item.text === prompt);
-    if (idx >= 0) {
-      const [item] = pendingWechatInputs.splice(idx, 1);
-      return { fromWechat: true, requestId: item.requestId };
-    }
-  }
-
-  return { fromWechat: false, requestId: null };
 }
 
 /**
