@@ -23,6 +23,7 @@
 | 起始基线 | `dev` @ `27febd7`（v0.4.0） |
 | 模型 | `opencode-go/deepseek-v4-flash`（注意：`deepseek-flash` 会 403） |
 | 自动测试基线 | **129 pass / 15 files / 0 fail**；`bun run typecheck` 零错误 |
+| 验收基线（S8） | **171 pass / 20 files / 0 fail**；`bun install --frozen-lockfile` + `typecheck` + `test` 全绿 |
 | 运行时 | Node ≥ 22.19；开发/测试用 Bun |
 | vendor | `api/ auth/ cdn/ media/ messaging/ util/`、`types/*.d.ts` **冻结，零改动** |
 | 所有权 | 仅重构 `src/` |
@@ -47,7 +48,40 @@
 | S5 | adapters ACL + vendor 耦合文档 + 端口冻结 | 可与主线并行 | 低 | ✅ 完成 `643596e`（163 pass） |
 | S6 | Channel 瘦身 / ChannelState 收敛（可选） | S1–S3 | 中 | ✅ 完成 `093cf86`（167 pass） |
 | S7 | F6「连发多图后文本阻塞」定位与修复 | 独立 | 中 | ✅ 完成 `1f535de`（171 pass） |
-| S8 | 文档归档与清理 | 全部 | 低 | 进行中 |
+| S8 | 文档归档与清理（ARCHITECTURE/C4 同步 + E2E 清单 + README 收尾） | 全部 | 低 | 进行中（文档已提交 `8d194be`，待 rf-8 verify 通过后转 ✅） |
+
+## 最终架构
+
+```
+src/index.ts  组合根：createExtension() 显式组装 application + ChannelState + adapters + Channel + PiHost + Auth
+  ├─ application/   用例层：reply（ReplyService：agent_settled 发送决策）/ session（SessionService：会话生命周期）
+  │                  types（DTO + 窄接口 ReplyChannel/SessionChannel）；不依赖 pi / vendor / 具体 Channel
+  ├─ bridge/        pi 适配层（事件翻译）：events / turn / meta / commands / session-ui / tool-send-file
+  ├─ channel/       通道核心：Channel + state + request-id（RequestIdGenerator）+ polling/queue/router/
+  │                  media-store/typing/sender（只依赖 ports / storage / shared）
+  ├─ ports/         端口接口：inbound / outbound / media / auth / pi-host / types
+  ├─ adapters/      微信侧薄包装（ACL）：唯一接触 vendor 的模块
+  ├─ storage/       持久化（atomic write + per-path 串行队列）
+  └─ shared/        基础 + redact/file-logger 再导出边界
+```
+
+依赖方向（单向，无倒置）：`index → bridge / application / adapters / channel / ports`；
+`bridge → application（事件→用例委托）/ channel（BridgeChannel 窄接口）/ ports / storage`；
+`application → channel（ReplyChannel/SessionChannel）/ ports（WechatAuth）/ storage / shared`；
+`channel → ports / storage / shared`；`adapters → ports + vendor`。
+
+## 结果汇总
+
+- **测试**：129 → **171 pass / 20 files / 0 fail**；`bun run typecheck` 零错误；vendor **零改动**。
+- **新增 `src/application/`**：`reply.ts`（`ReplyService` + `SettledContext`/`ReplyChannel`）、
+  `session.ts`（`SessionService` + `SessionUi`/`SessionChannel`）、`types.ts`；`bridge` 退化为事件翻译。
+- **新增 `src/channel/request-id.ts`**：`RequestIdGenerator`（`YYMMDDHHMMSSmmm` + 3 位序号），
+  `ChannelState` 收敛（去掉 requestId 追踪）；`Channel` 删除 `configure()`/`cleanupProcessedRequests()`。
+- **ACL 明确**：`docs/vendor-constraints.md`（S5）记录 vendor 不可动耦合、端口冻结与责任边界。
+- **A3 修复**：`PollingLoop.start()` 同步 `connecting`，重启后 `/wechat status` 状态及时更新。
+- **F6 修复**：单条 `onMessage` 失败隔离 + 媒体 ack 失败仅记录日志，连发多图后文本不再阻塞。
+- **归档**：ARCHITECTURE/C4 同步（`d666130`）；人工 E2E 清单 `e2e-manual-2026-10-12.md`（`8d194be`）；
+  各阶段四件套见 `stages/`（rf-1 ~ rf-8）。
 
 ## 流程约定
 
