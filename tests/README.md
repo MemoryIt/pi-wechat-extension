@@ -22,6 +22,22 @@
 迁移注意：原引擎内部字段（如 `typingTicketCache`、`pendingMessages`）已移入协作类，测试统一走 `Channel` 公共方法；
 `tests/channel/queue.test.ts` / `media-store.test.ts` / `router.test.ts` 直接对纯模块做单测。
 
+## Channel 瘦身回归（CS-1–CS-7，2026-10-12b）
+
+2026-10-12b 的 channel 结构收敛（详见 `docs/refactor-2026-10-12b/`）逐步抽出协作类、消除 `Channel` 的装配 / 队列 / 入站职责，每阶段保持全绿：
+
+| 阶段 | 内容 | 新增 / 受影响测试 |
+|---|---|---|
+| CS-1 | `MessageRouter` 成为 turn 编排唯一入口并拥有 `TurnQueue` | `router.test.ts`（`dispatch` / `onTurnDone`） |
+| CS-2 | 抽出 `inbound-parser`（`parseInbound` 纯函数） | `inbound-parser.test.ts` |
+| CS-3 | 移除自研层入站 slash 拦截（`/` 开头消息交给 LLM） | `channel.test.ts` 行为变更回归 |
+| CS-4 | 抽出 `credential-loader`（`CredentialLoader.ensureSession`） | `credential-loader.test.ts` |
+| CS-5 | 抽出 `inbound-handler`（requestId + contextToken 同步 + dispatch） | `inbound-handler.test.ts`；D13 迁至 `request-id.test.ts` |
+| CS-6 | 抽出 `create-channel`（`createChannelRuntime` 装配工厂） | 既有构造路径覆盖，无新增 |
+| CS-7 | 收敛 `Channel` facade 公共面（删除仅测试用 / 已死的转发方法） | `typing.test.ts`（原 D16 三例迁移） |
+
+迁移注意：原经 `Channel` 私有 / 转发方法观测的用例改为直接测协作类（`request-id` / `typing` / `inbound-parser` / `inbound-handler` / `credential-loader`）；`Channel` 公共面收敛后生产可见行为不变。
+
 ## 运行
 
 环境使用 Bun（`node` 在本机只是指向 `bun` 的软链，没有 npm）：
@@ -50,7 +66,7 @@ bun run typecheck                # tsc --noEmit（底层模块有 3 条既有 TS
 | 层 | 目录 | 被测对象 | 手法 |
 |---|---|---|---|
 | L1 纯逻辑 | `tests/unit` | `src/shared/config.ts`、`src/storage/state.ts` | 真实模块 + mock `getAgentDir`/`logger`，临时目录 |
-| L2 通道状态机 | `tests/channel` | `src/channel/channel.ts` 的 `Channel` | 注入端口 fake（inbound/outbound/media）；storage/config 用真实实现 |
+| L2 通道状态机 | `tests/channel` | `src/channel/channel.ts` 的 `Channel` + 纯协作类（`queue` / `media-store` / `router` / `typing` / `inbound-parser` / `inbound-handler` / `credential-loader`） | 注入端口 fake（inbound/outbound/media）；storage/config 用真实实现 |
 | L3 事件桥接 | `tests/bridge` | `src/index.ts` | 探针型假 `ExtensionAPI` + 假 Channel |
 
 ## 基础设施
@@ -78,9 +94,9 @@ bun run typecheck                # tsc --noEmit（底层模块有 3 条既有 TS
 | D10 | `getSingleUserContextToken` 不绑 `token.userId` | `tests/unit/storage.test.ts` | 按 `token.userId` 精确取 |
 | D11 | 明文打印 `botToken` | `tests/bridge/event-wiring.test.ts` | 使用 `util/redact` 脱敏 |
 | D12 | 存储 read-modify-write 并发丢写（非原子） | `tests/unit/storage.test.ts` | 原子写 + 按路径串行队列 |
-| D13 | 同毫秒 requestId 冲突 | `tests/channel/channel.test.ts` | 时间戳 + 同毫秒递增序号 |
+| D13 | 同毫秒 requestId 冲突 | `tests/channel/request-id.test.ts` | `RequestIdGenerator`：时间戳 + 同毫秒递增序号（CS-5 起由 `InboundHandler` 持有） |
 | D14 | `sendFileToUser` 忽略 `fileName` | `tests/channel/channel.test.ts` | 底层不支持显示名，移除该参数，以 basename 为准 |
-| D15 | `isSlashCommand` 魔法数字 + 只看首条 | `tests/channel/channel.test.ts` | 用 `MessageItemType.TEXT` 并遍历 |
+| D15 | ~~`isSlashCommand` 魔法数字 + 只看首条~~ | 已移除（CS-3：入站 slash 拦截整体删除；`/` 开头消息现作为普通消息交给 LLM） | — |
 | D16 | typing ticket 不随 contextToken 失效、interval 未 unref | `tests/channel/channel.test.ts` | 缓存按 token 命中；interval `unref` |
 | D17 | 只监听 `agent_end`，未用 `agent_settled` | `tests/bridge/event-wiring.test.ts` | 最终回复改在 `agent_settled` 发送 |
 | D18 | `message_start/end` 对所有角色触发，typing 过早关闭 | `tests/bridge/event-wiring.test.ts` | 仅 assistant 控制 typing |
