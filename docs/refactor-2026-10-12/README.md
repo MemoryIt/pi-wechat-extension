@@ -4,8 +4,16 @@
 （见 `docs/refactor-2026-10-11/`）基础上，补齐缺失的 **application 用例层**、收敛会话生命周期、
 清除自写层模块级可变状态，并把 adapters 明确为 Anti-Corruption Layer。
 
-> 目录与文件约定沿用上一轮：`docs/refactor-<date>/`（README + e2e-manual）+ `stages/` 每阶段四件套
-> （`<s>.md` 任务书、`<s>-verify.md` 验证指令、`<s>.result.md` 实现结果、`<s>.verify.md` 验证报告）。
+> 目录与文件约定：`docs/refactor-<date>/`（README + e2e-manual）+ `stages/` 每阶段四件套。
+> 命名采用**方案 B（点号 + 角色后缀）**，取代上一轮易混的 `-verify` / `.verify` 差异：
+>
+> | 角色 | 文件名 |
+> |---|---|
+> | 任务书 | `<s>.md` |
+> | 验证指令（给 verifier） | `<s>.verify-task.md` |
+> | 实现结果 | `<s>.result.md` |
+> | 验证报告 | `<s>.verify-result.md` |
+>
 > 运行时交接目录为 `/tmp/pi-tasks/`，完成信号用 `tmux wait-for -S task-<s>` / `task-<s>-verify`。
 
 ## 基本信息
@@ -46,7 +54,8 @@
 - 每个阶段从 `dev` 切分支 `refactor/<s>-<slug>`，子 Agent 只在自己的 worktree 工作。
 - 子 Agent：实现 → typecheck/test → 原子提交到本分支 → 写 `/tmp/pi-tasks/<s>.result.md` →
   `tmux wait-for -S task-<s>`。
-- 验证 Agent：只读复验本分支 → 写 `/tmp/pi-tasks/<s>.verify.md` → `tmux wait-for -S task-<s>-verify`。
+- 验证 Agent：只读复验本分支 → 写 `/tmp/pi-tasks/<s>.verify-result.md` → `tmux wait-for -S task-<s>-verify`。
+- 每阶段结束后，把 `/tmp/pi-tasks/<s>.result.md` / `<s>.verify-result.md` 归档到 `stages/` 下对应文件名。
 - **禁止任何子 Agent push**；push 只能由主 Agent 在人类明确指令后执行。
 - 验证 PASS 且人工确认后，主 Agent 才 `git merge --ff-only` 合回 `dev`。
 
