@@ -162,7 +162,14 @@ export class PollingLoop {
 
           for (const msg of updates.messages) {
             if (abortSignal.aborted || generation !== this.pollingGeneration) break;
-            await this.deps.onMessage(msg, opts);
+            // F6：单条消息处理失败只记录日志，不得中断同批次其余消息；
+            // 只要 getUpdates 成功，批次 cursor 仍会推进（该批次视为成功）。
+            try {
+              await this.deps.onMessage(msg, opts);
+            } catch (error: unknown) {
+              const errMsg = error instanceof Error ? error.message : String(error);
+              this.deps.error("[Wechat] Failed to handle message, continuing:", errMsg);
+            }
           }
 
           // 更新并持久化 cursor（缺字段回落由 inbound adapter 完成）
