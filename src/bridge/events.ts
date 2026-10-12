@@ -17,8 +17,8 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { Channel } from "../channel/channel.js";
 import type { PluginLogger } from "../shared/logger.js";
+import type { Notifier } from "../channel/state.js";
 import {
   resolveTurnFromBranch,
   isAssistantMessage,
@@ -30,8 +30,16 @@ import type { ReplyService } from "../application/reply.js";
 import type { SessionService } from "../application/session.js";
 import { createSessionUi } from "./session-ui.js";
 
+/** `registerBridge` 消费的最小通道面（窄接口）：不依赖具体 `Channel` 实现。 */
+export interface BridgeChannel {
+  setNotifier(notifier: Notifier): void;
+  setTerminalProcessing(value: boolean): void;
+  startTyping(): Promise<void>;
+  stopTyping(): Promise<void>;
+}
+
 export interface BridgeDeps {
-  channel: Channel;
+  channel: BridgeChannel;
   reply: ReplyService;
   session: SessionService;
   turn: TurnResolver;
