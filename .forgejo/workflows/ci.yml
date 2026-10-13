@@ -17,19 +17,8 @@ jobs:
       - name: Checkout
         uses: https://code.forgejo.org/actions/checkout@v4
 
-      - name: Setup Bun
-        run: |
-          set -e
-          if ! command -v bun >/dev/null 2>&1; then
-            if ! command -v unzip >/dev/null 2>&1; then
-              if command -v apt-get >/dev/null 2>&1; then
-                apt-get update && apt-get install -y unzip
-              fi
-            fi
-            curl -fsSL https://bun.sh/install | bash
-          fi
-          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
-          "$HOME/.bun/bin/bun" --version
+      - name: Check Bun
+        run: bun --version
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
