@@ -11,7 +11,7 @@ on:
 jobs:
   test:
     # 自托管 runner 的标签为 `docker`（全局 runner "portainer-dind"）
-    runs-on: docker
+    runs-on: bun-debian
     timeout-minutes: 15
     steps:
       - name: Checkout
