@@ -1,0 +1,103 @@
+@startuml
+' ============================================================================
+' C4 Level 3 - Component (Channel 子系统展开)
+' 范围：展开 03-components.puml 中的 Channel Component
+'
+' 事实来源：src/channel/*.ts、src/ports/*.ts、docs/ARCHITECTURE.md
+' 定位：实用 drill-down（Channel 是本项目最复杂的子系统）。
+'       保留 Channel 直接交互的端口与 Storage / Shared；
+'       vendor、pi API 细节不在此图重复。
+' 抽象：Channel 在此图中为 scope/边界，其编排器 + 状态 + 协作类为 Components。
+' ============================================================================
+
+!include <C4/C4_Component>
+!include _styles.puml
+
+title Component Diagram — Channel 子系统（展开 03-components.puml 中的 Channel）
+
+' --- Channel 内部：编排器 + 状态 + 协作类 ---------------------------------
+Container_Boundary(channel, "Channel（src/channel/）") {
+  Component(channelCore, "channel", "facade", "Channel：生命周期 / 消息编排；构造委托 create-channel，handleMessage 委托 inbound-handler，triggerAi/onAiDone 委托 router", $tags="self")
+  Component(createChannel, "create-channel", "工厂", "createChannelRuntime：装配协作类并注入回调（行为与旧构造函数等价）", $tags="self")
+  Component(inboundParser, "inbound-parser", "解析", "parseInbound：item_list -> {text,hasText,hasMedia}（纯函数）", $tags="self")
+  Component(inboundHandler, "inbound-handler", "入站", "InboundHandler：requestId 生成 + contextToken 同步 + router.dispatch", $tags="self")
+  Component(credentialLoader, "credential-loader", "凭证", "CredentialLoader.ensureSession：storage -> ChannelState", $tags="self")
+  Component(state, "state", "状态", "ChannelState：单用户凭证 / 注入依赖 / 终端标志（requestId 已迁出）", $tags="self")
+  Component(requestId, "request-id", "生成器", "RequestIdGenerator：YYMMDDHHMMSSmmm + 3 位同毫秒序号（由 inbound-handler 持有）", $tags="self")
+  Component(polling, "polling", "长轮询", "退避 / abort-race / 重入守卫 / generation 令牌", $tags="self")
+  Component(queue, "queue", "队列", "TurnQueue FIFO / 去重 + SerialTaskQueue 后台串行（纯状态；TurnQueue 由 router 拥有）", $tags="self")
+  Component(router, "router", "路由", "MessageRouter：turn 编排唯一入口（dispatch/onTurnDone）+ 媒体后台 + 排空", $tags="self")
+  Component(mediaStore, "media-store", "媒体", "落盘 / ISO 周目录 / 魔数识别 / 批量下载", $tags="self")
+  Component(typing, "typing", "typing", "ticket 缓存（绑定 contextToken）+ keepalive", $tags="self")
+  Component(sender, "sender", "发送", "文本 / 文件出站 + 重试", $tags="self")
+}
+
+' --- Channel 依赖的端口（由 adapters 实现）--------------------------------
+Container_Boundary(ports, "Ports（src/ports/，由 adapters 实现）") {
+  Component(inbound, "WechatInbound", "端口", "getUpdates", $tags="self")
+  Component(outbound, "WechatOutbound", "端口", "sendText / sendFile / sendTyping / getTypingTicket", $tags="self")
+  Component(media, "WechatMedia", "端口", "download(item, deps)", $tags="self")
+  Component(piHost, "PiHost", "端口", "appendEntry / sendUserMessage / sendMessage", $tags="self")
+}
+
+' --- 直接依赖的外部层 -----------------------------------------------------
+Component(storage, "Storage", "持久化", "凭证 / context token / sync cursor", $tags="self")
+Component(shared, "Shared", "基础", "config / logger / time / types", $tags="self")
+
+' --- 关系（Channel 内部）--------------------------------------------------
+' Channel 只持有运行时协作类并对外委托；装配由 create-channel 完成
+Rel(channelCore, state, "持有 / 读写", $tags="allowed")
+Rel(channelCore, inboundHandler, "持有 / 委托 handleMessage", $tags="allowed")
+Rel(channelCore, credentialLoader, "持有 / 委托 initSession", $tags="allowed")
+Rel(channelCore, router, "持有 / 委托 triggerAi·onAiDone", $tags="allowed")
+Rel(channelCore, polling, "持有 / 委托 startPolling·stopPolling", $tags="allowed")
+Rel(channelCore, typing, "持有 / 委托 startTyping·stopTyping", $tags="allowed")
+Rel(channelCore, sender, "持有 / 委托 sendFile·sendReply", $tags="allowed")
+Rel(channelCore, createChannel, "构造委托 createChannelRuntime", $tags="allowed")
+
+' create-channel 装配各组件
+Rel(createChannel, state, "装配", $tags="allowed")
+Rel(createChannel, inboundHandler, "装配", $tags="allowed")
+Rel(createChannel, credentialLoader, "装配", $tags="allowed")
+Rel(createChannel, router, "装配", $tags="allowed")
+Rel(createChannel, polling, "装配", $tags="allowed")
+Rel(createChannel, typing, "装配", $tags="allowed")
+Rel(createChannel, sender, "装配", $tags="allowed")
+Rel(createChannel, mediaStore, "装配", $tags="allowed")
+Rel(createChannel, queue, "装配（TurnQueue / SerialTaskQueue）", $tags="allowed")
+
+' --- 关系（协作类内部）--------------------------------------------------
+Rel(inboundHandler, requestId, "持有 / next()", $tags="allowed")
+Rel(inboundHandler, state, "读写 contextToken", $tags="allowed")
+Rel(inboundHandler, typing, "invalidateTicket", $tags="allowed")
+Rel(inboundHandler, router, "dispatch", $tags="allowed")
+Rel(router, queue, "拥有 TurnQueue / 使用 SerialTaskQueue", $tags="allowed")
+Rel(router, inboundParser, "使用 parseInbound", $tags="allowed")
+Rel(router, mediaStore, "使用", $tags="allowed")
+Rel(router, sender, "使用（媒体 ack）", $tags="allowed")
+
+' --- 关系（Channel / 协作类 → 端口）--------------------------------------
+Rel(polling, inbound, "getUpdates", $tags="allowed")
+Rel(typing, outbound, "getTypingTicket / sendTyping", $tags="allowed")
+Rel(sender, outbound, "sendText / sendFile", $tags="allowed")
+Rel(mediaStore, media, "download", $tags="allowed")
+Rel(router, piHost, "appendEntry / sendUserMessage / sendMessage", $tags="allowed")
+
+' --- 关系（Channel / 协作类 → Storage / Shared）--------------------------
+Rel(credentialLoader, storage, "读取凭证 / context token", $tags="allowed")
+Rel(credentialLoader, state, "写入凭证", $tags="allowed")
+Rel(inboundHandler, storage, "saveContextToken", $tags="allowed")
+Rel(createChannel, shared, "配置 / 日志 / 时间 / 类型", $tags="allowed")
+
+note as ScopeNote
+  本图展开 **03-components.puml** 中的 Channel Component。
+  - 端口仅列 Channel 直接使用的 **WechatInbound / WechatOutbound / WechatMedia / PiHost**；
+    `WechatAuth` 由 application / index 使用，不在此图。
+  - `channel.ts`（facade）构造委托 `create-channel.ts` 装配；协作类只依赖注入的端口，
+    真实端口实现由组合根 `src/index.ts` 组装（`ChannelState` + inbound/outbound/media）后注入，测试则注入 fake。
+  - 用户、微信 App / iLink、本地目录、完整 pi API 不在此图重复。
+  - 端口/适配器边界见 **03b-ports-adapters.puml**；类级细节见 **04-class-channel.puml**。
+end note
+
+SHOW_LEGEND()
+@enduml

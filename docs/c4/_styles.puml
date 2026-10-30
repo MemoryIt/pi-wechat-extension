@@ -1,0 +1,14 @@
+' ============================================================================
+' 共享 C4 样式（元素标签 / 关系标签）
+' 使用前提：调用方已 !include <C4/C4_Component>
+' 由 docs/c4/03-components.puml、03a-channel.puml、03b-ports-adapters.puml include。
+' ============================================================================
+
+' 元素标签：自写 / 第三方适配 / 外部
+AddElementTag("self", $bgColor="#1168BD", $fontColor="#FFFFFF", $borderColor="#0B4F8A", $legendText="自写组件")
+AddElementTag("thirdparty", $bgColor="#999999", $fontColor="#FFFFFF", $borderColor="#666666", $legendText="第三方适配层 (vendored)")
+AddElementTag("external", $bgColor="#8B0000", $fontColor="#FFFFFF", $borderColor="#5A0000", $legendText="外部系统 / 宿主 API")
+
+' 关系标签：允许的依赖 / 事件回调
+AddRelTag("allowed", $textColor="#1168BD", $lineColor="#1168BD", $legendText="允许的依赖方向")
+AddRelTag("event", $textColor="#D97706", $lineColor="#D97706", $lineStyle=DashedLine(), $legendText="事件 / 回调")

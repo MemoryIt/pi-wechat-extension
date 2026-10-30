@@ -1,0 +1,80 @@
+@startuml
+' ============================================================================
+' C4 Level 3 - Component (Ports & Adapters 边界视图)
+' 范围：说明「调用方 → 端口 ← 适配器 → vendor」的依赖倒置
+'
+' 事实来源：src/ports/*.ts、src/adapters/*.ts、docs/ARCHITECTURE.md
+' 定位：03-components.puml 的补充边界视图；不重复 Channel 内部细节。
+' 抽象：插件内为 Ports / Adapters 两个边界，vendor 目录为第三个边界。
+' ============================================================================
+
+!include <C4/C4_Component>
+!include _styles.puml
+
+title Component Diagram — Ports & Adapters 边界（调用方 → ports ← adapters → vendor）
+
+' --- 插件侧：调用方与组合根 ----------------------------------------------
+Container_Boundary(plugin, "pi-wechat-extension（调用方）") {
+  Component(consumers, "Channel / Application", "调用方", "只依赖 src/ports/ 的窄接口（application 另依赖 storage / shared），不接触 vendor", $tags="self")
+  Component(index, "index", "组合根", "createExtension：注入真实 adapters / fake ports", $tags="self")
+}
+
+' --- 端口：依赖倒置的抽象 -------------------------------------------------
+Container_Boundary(ports, "Ports（src/ports/，仅类型）") {
+  Component(wechatInbound, "WechatInbound", "端口", "getUpdates(params) → { messages, cursor }", $tags="self")
+  Component(wechatOutbound, "WechatOutbound", "端口", "sendText / sendFile / sendTyping / getTypingTicket", $tags="self")
+  Component(wechatMedia, "WechatMedia", "端口", "download(item, deps) → { path } | null", $tags="self")
+  Component(wechatAuth, "WechatAuth", "端口", "startQr / waitForLogin", $tags="self")
+}
+
+' --- 适配器：唯一接触 vendor 的自写层 -------------------------------------
+Container_Boundary(adapters, "Adapters（src/adapters/，微信侧薄包装）") {
+  Component(adapterInbound, "inbound", "adapter", "映射 {msgs,get_updates_buf} → {messages,cursor}", $tags="thirdparty")
+  Component(adapterOutbound, "outbound", "adapter", "凭证 provider + 发送 / typing / ticket", $tags="thirdparty")
+  Component(adapterMedia, "media", "adapter", "3 参 SaveMediaFn → vendor 5 参回调", $tags="thirdparty")
+  Component(adapterAuth, "auth", "adapter", "login-qr 两步包装", $tags="thirdparty")
+}
+
+' --- vendor：迁移自 openclaw-weixin，视为外部 -----------------------------
+Container_Boundary(vendor, "vendor（api / auth / cdn / media / messaging / util）") {
+  Component(vApi, "api", "vendor", "getUpdates / getConfig / sendTyping", $tags="thirdparty")
+  Component(vMessaging, "messaging", "vendor", "sendMessageWeixin / sendWeixinMediaFile", $tags="thirdparty")
+  Component(vMedia, "media", "vendor", "downloadMediaFromItem", $tags="thirdparty")
+  Component(vAuth, "auth", "vendor", "login-qr", $tags="thirdparty")
+}
+
+System_Ext(ilink, "微信 iLink 后端", "云端机器人 API", $tags="external")
+
+' --- 关系 -----------------------------------------------------------------
+Rel(index, consumers, "组装并注入", $tags="allowed")
+Rel(index, adapters, "组装真实 adapter", $tags="allowed")
+Rel(consumers, wechatInbound, "依赖", $tags="allowed")
+Rel(consumers, wechatOutbound, "依赖", $tags="allowed")
+Rel(consumers, wechatMedia, "依赖", $tags="allowed")
+Rel(consumers, wechatAuth, "依赖", $tags="allowed")
+
+Rel(adapterInbound, wechatInbound, "实现", $tags="allowed")
+Rel(adapterOutbound, wechatOutbound, "实现", $tags="allowed")
+Rel(adapterMedia, wechatMedia, "实现", $tags="allowed")
+Rel(adapterAuth, wechatAuth, "实现", $tags="allowed")
+
+Rel(adapterInbound, vApi, "包装 getUpdates", $tags="allowed")
+Rel(adapterOutbound, vApi, "包装 getConfig / sendTyping", $tags="allowed")
+Rel(adapterOutbound, vMessaging, "包装 sendMessageWeixin / sendWeixinMediaFile", $tags="allowed")
+Rel(adapterMedia, vMedia, "包装 downloadMediaFromItem", $tags="allowed")
+Rel(adapterAuth, vAuth, "包装 login-qr", $tags="allowed")
+
+Rel(vendor, ilink, "HTTPS：长轮询 / 发送 / 上传下载 / typing / 登录", $tags="allowed")
+
+note as BoundaryNote
+  **依赖倒置**
+  - 调用方（Channel / Application）只 import `src/ports/`，不知道 vendor 存在；
+    application 还用窄接口（ReplyChannel / SessionChannel）而非具体 Channel。
+  - `src/adapters/` 是唯一包装 vendor 的自写层，实现对应端口。
+  - 例外边界：`ports/types.ts` 转发 vendor 协议类型；
+    `shared/redact.ts` / `shared/file-logger.ts` 再导出 vendor 工具。
+  - 测试注入 fake ports（channel-harness）即可完全绕开 vendor。
+end note
+
+SHOW_LEGEND()
+@enduml
