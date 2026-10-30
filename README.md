@@ -1,3 +1,4 @@
+https://github.com/user-attachments/assets/fdaf0e09-9fa5-491d-8507-464b0a5ec16d
 # pi-wechat-extension
 
 将微信接入 [pi coding agent](https://github.com/badlogic/pi-mono) 的扩展，实现「微信发消息 → pi 生成回复 → 微信收到」的双向交互。单用户模式：扫码登录一次，凭证持久化，下次自动连接。
